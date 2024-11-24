@@ -4,7 +4,7 @@ namespace App\Commands;
 
 use Telegram\Bot\Commands\Command;
 
-class StartCommand extends Command
+class SetPublicCommand extends Command
 {
     protected string $name = 'start';
     protected string $description = 'Запуск / перезапуск бота';

@@ -16,7 +16,7 @@ return [
     |
     | - name: The *personal* name you would like to refer to your bot as.
     |
-    |       - token:    Your Telegram Bot's Access Token.
+    |       - token:    Your Telegram Bot's Access Contract.
                         Refer for more details: https://core.telegram.org/bots#botfather
     |                   Example: (string) '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'.
     |
@@ -40,7 +40,7 @@ return [
              */
             'allowed_updates' => null,
             'commands' => [
-                \App\Commands\StartCommand::class,
+                \App\Commands\StartCommand::class, \App\Commands\NewPortfolioCommand::class,
             ],
         ],
 
