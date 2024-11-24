@@ -40,7 +40,7 @@ return [
              */
             'allowed_updates' => null,
             'commands' => [
-                \App\Commands\StartCommand::class, \App\Commands\NewPortfolioCommand::class,
+                \App\Commands\StartCommand::class, \App\Commands\CreatePortfolioCommand::class,
             ],
         ],
 
