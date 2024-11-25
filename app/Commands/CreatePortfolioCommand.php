@@ -3,11 +3,9 @@
 namespace App\Commands;
 
 use App\Models\Portfolio;
-use App\Models\TelegramUser;
-use Telegram\Bot\Commands\Command;
 use Illuminate\Support\Facades\Session;
 
-class CreatePortfolioCommand extends Command
+class CreatePortfolioCommand
 {
     protected string $name = '/create_portfolio';
     protected string $description = 'Запуск / Перезапуск бота';
@@ -17,12 +15,6 @@ class CreatePortfolioCommand extends Command
         $this->portfolio = $portfolio;
     }
 
-    public function handle()
-    {
-        $this->replyWithMessage([
-            'text' => 'Введите имя вашего портфеля:',
-        ]);
-    }
 
     public function handlePortfolioName($chatId, $name)
     {
