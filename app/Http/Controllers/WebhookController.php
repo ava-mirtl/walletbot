@@ -42,11 +42,7 @@ class WebhookController extends Controller
                     $userState->step = 'portfolio_name';
                     $userState->value = 'awaiting_portfolio_name';
                     $userState->save();
-                    $this->botsManager->bot()->sendMessage([
-                        'chat_id' => $userId ,
-                        'text' => 'Введите имя вашего портфеля:',
-                        'parse_mode' => 'markdown',
-                    ]);
+                    $this->sendMessage($userId, 'Введите имя вашего портфеля:');
                     break;
                 case '/search_portfolio':
                     $userState = new UserState();
@@ -54,34 +50,45 @@ class WebhookController extends Controller
                     $userState->step = 'search_portfolio';
                     $userState->value = 'awaiting_username';
                     $userState->save();
-                    $this->botsManager->bot()->sendMessage([
-                        'chat_id' => $userId,
-                        'text' => 'Введите username владельца без "@":',
-                        'parse_mode' => 'markdown',
-                    ]);
+                    $this->sendMessage($userId, 'Введите username владельца без "@":');
                     break;
+
                 case '/portfolio_type_public':
                 case '/portfolio_type_private':
                     // Передаем 0 или 1 в зависимости от типа портфеля
                     $this->createPortfolio($callbackData === '/portfolio_type_private' ? 1 : 0, $userId);
-                    $this->botsManager->bot()->sendMessage([
-                        'chat_id' => $update->getChat()->id,
-                        'text' => 'Портфель успешно создан',
-                        'parse_mode' => 'markdown',
-                    ]);
+                    $markup =[
+                        'inline_keyboard' => [
+                            [['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
+                                ['text' => 'В главное меню', 'callback_data' => '/main_menu']],
+                            [['text' => 'Показать все активы', 'callback_data' => '/show_all']],
+                            [['text' => 'Купить/добавить транзакцию', 'callback_data' => '/add_token']]
+                        ],
+                    ];
+                    $this->sendMessage($userId, 'Портфель успешно создан', $markup);
                     break;
-                case preg_match('/^\/portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false: // Используем регулярное выражение для получения ID
+
+                case '/main_menu':
+                    $markup = ['inline_keyboard' => [
+                        [
+                            ['text' => 'Создать портфель', 'callback_data' => '/create_portfolio'],
+                            ['text' => 'Поиск портфеля', 'callback_data' => '/search_portfolio']
+                        ],
+                    ]];
+                    $this->sendMessage($userId, "Выберите действие:", $markup);
+
+                    break;
+
+                case preg_match('/^\/portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                     $portfolioId = $matches[1];
+
                     $portfolioInfo = Portfolio::find($portfolioId);
                     $author = $portfolioInfo->author()->get();
-
                     $total = 1000;
                     $tokensAmount = 2;
                     //ToDo: формула баланса, PNL
                     if ($portfolioInfo) {
-                        $this->botsManager->bot()->sendMessage([
-                            'chat_id' => $userId,
-                            'text' => "{$portfolioInfo->name}: @{$author[0]->username}
+                        $msg = "{$portfolioInfo->name}: @{$author[0]->username}
                             \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)
                             \nPNL: DAY 12% | WEEK 2%
                             \nMONTH 15% | ALL TIME 53%
@@ -93,14 +100,17 @@ class WebhookController extends Controller
                             \n\n Страница 1/3
                             \n\n Последнее обновление: 13 November 13:05 UTC
                             \n\n-------------------------------------------------
-                            \nADS: buy me buy buy buy buy",
-                        ]);
+                            \nADS: buy me buy buy buy buy";
+                        //toDo: buttons
+                        $this->sendMessage($userId, $msg );
                     } else {
-                        $this->botsManager->bot()->sendMessage([
-                            'chat_id' => $userId,
-                            'text' => "Портфолио не найдено.",
-                            'parse_mode' => 'markdown',
-                        ]);
+                        $markup = ['inline_keyboard' => [
+                            [
+                                ['text' => 'Назад', 'callback_data' => '/step_back'],
+                                ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                            ],
+                        ]];
+                        $this->sendMessage($userId, "Портфолио не найдено.", $markup);
                     }
                     break;
                 default:
@@ -114,75 +124,63 @@ class WebhookController extends Controller
                 $portfolioName = $update->getMessage()->getText();
                 $userState->value = $portfolioName;
                 $userState->save();
-                $this->botsManager->bot()->sendMessage([
-                    'chat_id' =>  $userId,
-                    'text' => "Вы ввели имя портфеля: *{$portfolioName}*.\nТеперь выберите тип портфеля:",
-                    'parse_mode' => 'markdown',
-                    'reply_markup' => json_encode([
-                        'inline_keyboard' => [
-                            [
-                                ['text' => 'Публичный', 'callback_data' => '/portfolio_type_public'],
-                                ['text' => 'Приватный', 'callback_data' => '/portfolio_type_private'],
-                            ],
-                        ],
-                    ]),
-                ]);
+                $markup = [
+                    'inline_keyboard' => [
+                        [
+                            ['text' => 'Публичный', 'callback_data' => '/portfolio_type_public'],
+                            ['text' => 'Приватный', 'callback_data' => '/portfolio_type_private'],
+                        ]
+                    ]];
+                $this->sendMessage($userId, "Вы ввели имя портфеля: *{$portfolioName}*.\nТеперь выберите тип портфеля:", $markup);
             }
             //поиск портфеля по юзернейму
             elseif ($userState && $userState->value === 'awaiting_username'){
                 $username = $update->getMessage()->getText();
                 $user = TelegramUser::where('username', $username)->first();
                 if (!$user) {
-                    $this->botsManager->bot()->sendMessage([
-                        'chat_id' => $userId,
-                        'text' => "Пользователь с username @{$username} не найден.",
-                        'reply_markup' => json_encode([
-                            'inline_keyboard' => [
-                                [
-                                    ['text' => 'Назад', 'callback_data' => '/step_back'],
-                                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
-                                ],
+                    $markup = [
+                        'inline_keyboard' => [
+                            [
+                                ['text' => 'Назад', 'callback_data' => '/step_back'],
+                                ['text' => 'В главное меню', 'callback_data' => '/main_menu']
                             ],
-                        ]),
-                    ]);
+                        ],
+                    ];
+                    $this->sendMessage($userId, "Пользователь с username @{$username} не найден.", $markup);
                     return response(null, 200);
                 }
+
                 $portfolio = $user->portfolio()->get();
                 $userState->step = 'choose_portfolio';
                 $userState->value = $username;
                 $userState->save();
+
                 if(count($portfolio)){
                     $text = "У @{$user->username} найдено:";
-                    $markup = [];
+                    $premarkup = [];
                     foreach ($portfolio as $item) {
-                        $markup[] = [[
+                        $premarkup[] = [[
                             "text" => $item->name,
                             "callback_data" => '/portfolio_' . $item->id,
                         ]];
                     }
+                    $markup = [
+                        'inline_keyboard' => $premarkup
+                    ];
                 }
                 else{
                     $text = "У @{$user->username} не найдено доступных портфелей";
-                    $markup = [
-                        ['text' => 'Назад', 'callback_data' => '/step_back'],
-                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']];
-                }
-//                dd([
-//                    'chat_id' =>  $userId,
-//                    'text' => $text,
-//                    'parse_mode' => 'markdown',
-//                    'reply_markup' => json_encode([
-//                        'inline_keyboard' => $markup
-//                    ]),
-//                ]);
-                $this->botsManager->bot()->sendMessage([
-                    'chat_id' =>  $userId,
-                    'text' => $text,
-                    'reply_markup' => json_encode([
-                        'inline_keyboard' => $markup
-                    ]),
-                ]);
 
+                    $markup = [
+                        'inline_keyboard' => [
+                            [
+                                ['text' => 'Назад', 'callback_data' => '/step_back'],
+                                ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                            ],
+                        ],
+                    ];
+                }
+                $this->sendMessage($userId,  $text, $markup);
             }
         }
         return response(null, 200);
@@ -191,10 +189,32 @@ class WebhookController extends Controller
     {
         $userState = UserState::where('telegram_user_id', $userId)->orderBy('created_at', 'desc')->first();
         $name = $userState->value;
-        $portfolio = new Portfolio();
-        $portfolio->telegram_user_id = $userId;
-        $portfolio->name = $name;
-        $portfolio->is_private = $type;
-        $portfolio->save();
+
+        $portfolio = Portfolio::where('telegram_user_id', $userId)->where('name', $name)->first();
+
+        if ($portfolio) {
+            $portfolio->is_private = $type;
+            $portfolio->save();
+        } else {
+            $portfolio = new Portfolio();
+            $portfolio->telegram_user_id = $userId;
+            $portfolio->name = $name;
+            $portfolio->is_private = $type;
+            $portfolio->save();
+        }
     }
+
+    private function sendMessage($chatId, $text, $markup = null) {
+        $messageData = [
+            'chat_id' => $chatId,
+            'text' => $text,
+        ];
+
+        if ($markup) {
+            $messageData['reply_markup'] = json_encode($markup);
+        }
+
+        $this->botsManager->bot()->sendMessage($messageData);
+    }
+
 }
