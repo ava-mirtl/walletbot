@@ -10,4 +10,9 @@ class Portfolio extends Model
     use HasFactory;
     protected $table = 'portfolios';
     protected $guarded = false;
+    public function author()
+    {
+        return $this->belongsTo(TelegramUser::class, 'telegram_user_id');
+    }
+
 }

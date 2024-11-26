@@ -37,21 +37,26 @@ class WebhookController extends Controller
             $callbackData = $update->getCallbackQuery()->getData();
             switch ($callbackData) {
                 case '/create_portfolio':
-                    $this->botsManager->bot()->sendMessage([
-                        'chat_id' => $userId ,
-                        'text' => 'Введите имя вашего портфеля:',
-                        'parse_mode' => 'markdown',
-                    ]);
                     $userState = new UserState();
                     $userState->telegram_user_id = $userId;
                     $userState->step = 'portfolio_name';
                     $userState->value = 'awaiting_portfolio_name';
                     $userState->save();
+                    $this->botsManager->bot()->sendMessage([
+                        'chat_id' => $userId ,
+                        'text' => 'Введите имя вашего портфеля:',
+                        'parse_mode' => 'markdown',
+                    ]);
                     break;
                 case '/search_portfolio':
+                    $userState = new UserState();
+                    $userState->telegram_user_id = $userId;
+                    $userState->step = 'search_portfolio';
+                    $userState->value = 'awaiting_username';
+                    $userState->save();
                     $this->botsManager->bot()->sendMessage([
                         'chat_id' => $userId,
-                        'text' => 'Введите username владельца портфеля:',
+                        'text' => 'Введите username владельца без "@":',
                         'parse_mode' => 'markdown',
                     ]);
                     break;
@@ -65,12 +70,46 @@ class WebhookController extends Controller
                         'parse_mode' => 'markdown',
                     ]);
                     break;
+                case preg_match('/^\/portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false: // Используем регулярное выражение для получения ID
+                    $portfolioId = $matches[1];
+                    $portfolioInfo = Portfolio::find($portfolioId);
+                    $author = $portfolioInfo->author()->get();
+
+                    $total = 1000;
+                    $tokensAmount = 2;
+                    //ToDo: формула баланса, PNL
+                    if ($portfolioInfo) {
+                        $this->botsManager->bot()->sendMessage([
+                            'chat_id' => $userId,
+                            'text' => "{$portfolioInfo->name}: @{$author[0]->username}
+                            \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)
+                            \nPNL: DAY 12% | WEEK 2%
+                            \nMONTH 15% | ALL TIME 53%
+                            \n\nАктивы: {$tokensAmount}/30 активных токенов
+                            \n\n 1. Paal AI | 6524 \$PAAL ~ 2245$ | ETH | Price: 1.292$ AOV: 1.09$ | MCAP 700K | 60% value
+                            \n2. NAMOTA AI | 524 \$NAI ~ 945$ | SOL | Price: 1$
+                            \n\nBag Achivments: x2, x3, x4, x10
+                            \nToken Achivments: x2 (3), x3 (5), x100 (1)
+                            \n\n Страница 1/3
+                            \n\n Последнее обновление: 13 November 13:05 UTC
+                            \n\n-------------------------------------------------
+                            \nADS: buy me buy buy buy buy",
+                        ]);
+                    } else {
+                        $this->botsManager->bot()->sendMessage([
+                            'chat_id' => $userId,
+                            'text' => "Портфолио не найдено.",
+                            'parse_mode' => 'markdown',
+                        ]);
+                    }
+                    break;
                 default:
                     break;
             }
         } elseif ($update->isType('message')) {
             $userState = UserState::where('telegram_user_id', $userId)->orderBy('created_at', 'desc')
                 ->first();
+            //создание портфеля
             if ( $userState && $userState->value === 'awaiting_portfolio_name') {
                 $portfolioName = $update->getMessage()->getText();
                 $userState->value = $portfolioName;
@@ -88,6 +127,62 @@ class WebhookController extends Controller
                         ],
                     ]),
                 ]);
+            }
+            //поиск портфеля по юзернейму
+            elseif ($userState && $userState->value === 'awaiting_username'){
+                $username = $update->getMessage()->getText();
+                $user = TelegramUser::where('username', $username)->first();
+                if (!$user) {
+                    $this->botsManager->bot()->sendMessage([
+                        'chat_id' => $userId,
+                        'text' => "Пользователь с username @{$username} не найден.",
+                        'reply_markup' => json_encode([
+                            'inline_keyboard' => [
+                                [
+                                    ['text' => 'Назад', 'callback_data' => '/step_back'],
+                                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                                ],
+                            ],
+                        ]),
+                    ]);
+                    return response(null, 200);
+                }
+                $portfolio = $user->portfolio()->get();
+                $userState->step = 'choose_portfolio';
+                $userState->value = $username;
+                $userState->save();
+                if(count($portfolio)){
+                    $text = "У @{$user->username} найдено:";
+                    $markup = [];
+                    foreach ($portfolio as $item) {
+                        $markup[] = [[
+                            "text" => $item->name,
+                            "callback_data" => '/portfolio_' . $item->id,
+                        ]];
+                    }
+                }
+                else{
+                    $text = "У @{$user->username} не найдено доступных портфелей";
+                    $markup = [
+                        ['text' => 'Назад', 'callback_data' => '/step_back'],
+                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']];
+                }
+//                dd([
+//                    'chat_id' =>  $userId,
+//                    'text' => $text,
+//                    'parse_mode' => 'markdown',
+//                    'reply_markup' => json_encode([
+//                        'inline_keyboard' => $markup
+//                    ]),
+//                ]);
+                $this->botsManager->bot()->sendMessage([
+                    'chat_id' =>  $userId,
+                    'text' => $text,
+                    'reply_markup' => json_encode([
+                        'inline_keyboard' => $markup
+                    ]),
+                ]);
+
             }
         }
         return response(null, 200);

@@ -52,9 +52,7 @@ class StartCommand extends Command
                     ,
                     Keyboard::inlineButton(['text' => 'Поиск портфеля', 'callback_data' => '/search_portfolio'])]
             );
-
         $this->replyWithMessage(['text' => 'Привет, давай познакомимся! Я бот, который поможет держать всю информацию в одном месте. Выбери действие:', 'reply_markup' => $keyboard]);
-
     }
 
     public function sendMessageForOldUser(): void
@@ -66,7 +64,6 @@ class StartCommand extends Command
             ,
                 Keyboard::inlineButton(['text' => 'Поиск портфеля', 'callback_data' => '/search_portfolio'])]
             );
-
         $this->replyWithMessage(['text' => 'Привет! Рад снова видеть тебя! Выбери действие:', 'reply_markup' => $keyboard]);
     }
 }
