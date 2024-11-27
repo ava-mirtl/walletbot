@@ -14,5 +14,9 @@ class Portfolio extends Model
     {
         return $this->belongsTo(TelegramUser::class, 'telegram_user_id');
     }
+    public function tokens()
+    {
+        return $this->belongsToMany(Contract::class, 'portfolio_contract', 'portfolio_id', 'contract_id');
+    }
 
 }

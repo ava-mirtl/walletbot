@@ -10,4 +10,8 @@ class Contract extends Model
     use HasFactory;
     protected $table = 'contracts';
     protected $guarded = false;
+    public function portfolios()
+    {
+        return $this->belongsToMany(Portfolio::class, 'portfolio_contract', 'contract_id', 'portfolio_id');
+    }
 }

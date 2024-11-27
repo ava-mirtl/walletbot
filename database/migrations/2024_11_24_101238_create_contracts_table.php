@@ -13,8 +13,7 @@ return new class extends Migration
     {
         Schema::create('contracts', function (Blueprint $table) {
             $table->id();
-            $table->text('token');
-            $table->string('web')->nullable();
+            $table->string('network')->nullable();
             $table->string('address')->nullable();
             $table->integer('tax')->nullable();
             $table->integer('quantity')->nullable();
