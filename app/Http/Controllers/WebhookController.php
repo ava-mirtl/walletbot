@@ -37,35 +37,22 @@ class WebhookController extends Controller
             $callbackData = $update->getCallbackQuery()->getData();
             switch ($callbackData) {
                 case '/create_portfolio':
-                    $userState = new UserState();
-                    $userState->telegram_user_id = $userId;
-                    $userState->step = 'portfolio_name';
-                    $userState->value = 'awaiting_portfolio_name';
-                    $userState->save();
+                    $this->handleBotState($userId, 'portfolio_name','awaiting_portfolio_name');
                     $this->sendMessage($userId, 'Введите имя вашего портфеля:');
                     break;
                 case '/search_portfolio':
-                    $userState = new UserState();
-                    $userState->telegram_user_id = $userId;
-                    $userState->step = 'search_portfolio';
-                    $userState->value = 'awaiting_username';
-                    $userState->save();
+                    $this->handleBotState($userId, 'search_portfolio','awaiting_username');
                     $this->sendMessage($userId, 'Введите username владельца без "@":');
                     break;
 
                 case '/portfolio_type_public':
                 case '/portfolio_type_private':
                     // Передаем 0 или 1 в зависимости от типа портфеля
-                    $this->createPortfolio($callbackData === '/portfolio_type_private' ? 1 : 0, $userId);
-                    $markup =[
-                        'inline_keyboard' => [
-                            [['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
-                                ['text' => 'В главное меню', 'callback_data' => '/main_menu']],
-                            [['text' => 'Показать все активы', 'callback_data' => '/show_all']],
-                            [['text' => 'Купить/добавить транзакцию', 'callback_data' => '/add_token']]
-                        ],
-                    ];
-                    $this->sendMessage($userId, 'Портфель успешно создан', $markup);
+                    $userState = UserState::where('telegram_user_id', $userId)->first();
+                    $name = $userState->value;
+                    $portfolio = Portfolio::where('telegram_user_id', $userId)->where('name', $name)->first();
+                    $this->createPortfolio($callbackData === '/portfolio_type_private' ? 1 : 0, $userId, $name, $portfolio);
+                    $this->showPortfolio($portfolio->id, $userId);
                     break;
 
                 case '/main_menu':
@@ -76,54 +63,26 @@ class WebhookController extends Controller
                         ],
                     ]];
                     $this->sendMessage($userId, "Выберите действие:", $markup);
-
                     break;
 
                 case preg_match('/^\/portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                     $portfolioId = $matches[1];
-
-                    $portfolioInfo = Portfolio::find($portfolioId);
-                    $author = $portfolioInfo->author()->get();
-                    $total = 1000;
-                    $tokensAmount = 2;
-                    //ToDo: формула баланса, PNL
-                    if ($portfolioInfo) {
-                        $msg = "{$portfolioInfo->name}: @{$author[0]->username}
-                            \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)
-                            \nPNL: DAY 12% | WEEK 2%
-                            \nMONTH 15% | ALL TIME 53%
-                            \n\nАктивы: {$tokensAmount}/30 активных токенов
-                            \n\n 1. Paal AI | 6524 \$PAAL ~ 2245$ | ETH | Price: 1.292$ AOV: 1.09$ | MCAP 700K | 60% value
-                            \n2. NAMOTA AI | 524 \$NAI ~ 945$ | SOL | Price: 1$
-                            \n\nBag Achivments: x2, x3, x4, x10
-                            \nToken Achivments: x2 (3), x3 (5), x100 (1)
-                            \n\n Страница 1/3
-                            \n\n Последнее обновление: 13 November 13:05 UTC
-                            \n\n-------------------------------------------------
-                            \nADS: buy me buy buy buy buy";
-                        //toDo: buttons
-                        $this->sendMessage($userId, $msg );
-                    } else {
-                        $markup = ['inline_keyboard' => [
-                            [
-                                ['text' => 'Назад', 'callback_data' => '/step_back'],
-                                ['text' => 'В главное меню', 'callback_data' => '/main_menu']
-                            ],
-                        ]];
-                        $this->sendMessage($userId, "Портфолио не найдено.", $markup);
-                    }
+                    $this->showPortfolio($portfolioId, $userId);
+                    break;
+                case preg_match('/^\/add_token_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                    $portfolioId = $matches[1];
+                    //введите сеть, кнопки
+                   // $this->addToken($portfolioId);
                     break;
                 default:
                     break;
             }
         } elseif ($update->isType('message')) {
-            $userState = UserState::where('telegram_user_id', $userId)->orderBy('created_at', 'desc')
-                ->first();
+            $userState = UserState::where('telegram_user_id', $userId)->first();
             //создание портфеля
             if ( $userState && $userState->value === 'awaiting_portfolio_name') {
                 $portfolioName = $update->getMessage()->getText();
-                $userState->value = $portfolioName;
-                $userState->save();
+                $this->handleBotState($userId, $step = null ,$portfolioName);
                 $markup = [
                     'inline_keyboard' => [
                         [
@@ -141,7 +100,6 @@ class WebhookController extends Controller
                     $markup = [
                         'inline_keyboard' => [
                             [
-                                ['text' => 'Назад', 'callback_data' => '/step_back'],
                                 ['text' => 'В главное меню', 'callback_data' => '/main_menu']
                             ],
                         ],
@@ -151,10 +109,7 @@ class WebhookController extends Controller
                 }
 
                 $portfolio = $user->portfolio()->get();
-                $userState->step = 'choose_portfolio';
-                $userState->value = $username;
-                $userState->save();
-
+                $this->handleBotState($userId, 'choose_portfolio',$username);
                 if(count($portfolio)){
                     $text = "У @{$user->username} найдено:";
                     $premarkup = [];
@@ -174,7 +129,6 @@ class WebhookController extends Controller
                     $markup = [
                         'inline_keyboard' => [
                             [
-                                ['text' => 'Назад', 'callback_data' => '/step_back'],
                                 ['text' => 'В главное меню', 'callback_data' => '/main_menu']
                             ],
                         ],
@@ -185,13 +139,8 @@ class WebhookController extends Controller
         }
         return response(null, 200);
     }
-    public function createPortfolio($type, $userId)
+    public function createPortfolio($type, $userId, $name, $portfolio)
     {
-        $userState = UserState::where('telegram_user_id', $userId)->orderBy('created_at', 'desc')->first();
-        $name = $userState->value;
-
-        $portfolio = Portfolio::where('telegram_user_id', $userId)->where('name', $name)->first();
-
         if ($portfolio) {
             $portfolio->is_private = $type;
             $portfolio->save();
@@ -204,7 +153,8 @@ class WebhookController extends Controller
         }
     }
 
-    private function sendMessage($chatId, $text, $markup = null) {
+    private function sendMessage($chatId, $text, $markup = null): void
+    {
         $messageData = [
             'chat_id' => $chatId,
             'text' => $text,
@@ -216,5 +166,65 @@ class WebhookController extends Controller
 
         $this->botsManager->bot()->sendMessage($messageData);
     }
+    private function handleBotState($userID, $step, $value): void
+    {
+        $userState = UserState::where('telegram_user_id', $userID)->first();
+        if ($userState) {
+            if ($step !== null) {
+                $userState->step = $step;
+            }
+            $userState->value = $value;
+            $userState->save();
+        } else {
+            $newUserState = new UserState();
+            $newUserState->telegram_user_id = $userID;
+            if ($step !== null) {
+                $newUserState->step = $step;
+            }
+            $newUserState->value = $value;
+            $newUserState->save();
+        }
+    }
+    private function showPortfolio($portfolioID, $userId)
+    {
 
+        $portfolioInfo = Portfolio::find($portfolioID);
+        $author = $portfolioInfo->author()->get();
+        $total = 1000;
+        $tokensAmount = 2;
+        //ToDo: формула баланса, PNL
+        if ($portfolioInfo) {
+            $msg = "{$portfolioInfo->name}: @{$author[0]->username}
+                            \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)
+                            \nPNL: DAY 12% | WEEK 2%
+                            \nMONTH 15% | ALL TIME 53%
+                            \n\nАктивы: {$tokensAmount}/30 активных токенов
+                            \n\n 1. Paal AI | 6524 \$PAAL ~ 2245$ | ETH | Price: 1.292$ AOV: 1.09$ | MCAP 700K | 60% value
+                            \n2. NAMOTA AI | 524 \$NAI ~ 945$ | SOL | Price: 1$
+                            \n\nBag Achivments: x2, x3, x4, x10
+                            \nToken Achivments: x2 (3), x3 (5), x100 (1)
+                            \n\n Страница 1/3
+                            \n\n Последнее обновление: 13 November 13:05 UTC
+                            \n\n-------------------------------------------------
+                            \nADS: buy me buy buy buy buy";
+            $markup =[
+                'inline_keyboard' => [
+                    [['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
+                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']],
+                    [['text' => 'Показать все активы', 'callback_data' => '/show_all']],
+                    [['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]]
+                ],
+            ];
+            //toDo: buttons
+            $this->sendMessage($userId, $msg, $markup);
+        } else {
+            $markup = ['inline_keyboard' => [
+                [
+                    ['text' => 'Назад', 'callback_data' => '/step_back'],
+                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                ],
+            ]];
+            $this->sendMessage($userId, "Портфолио не найдено.", $markup);
+        }
+    }
 }
