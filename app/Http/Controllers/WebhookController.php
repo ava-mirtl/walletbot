@@ -365,42 +365,59 @@ class WebhookController extends Controller
         $total = 1000;
         $tokensAmount = count($tokens);
 
+
         $msg = "{$portfolioInfo->name}: @{$author->username}
-            \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)
-            \nPNL: DAY 12% | WEEK 2%
-            \nMONTH 15% | ALL TIME 53%
-            \n\nАктивы: {$tokensAmount}/30 активных токенов\n\n";
+               \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)";
 
-        foreach ($tokens as $token) {
-            $tokenDetails = json_decode($token->api_response, true);
-
-            if (isset($tokenDetails['data']) && count($tokenDetails['data']) > 0) {
-                $tokenInfo = $tokenDetails['data'][0]['attributes'];
-
-                $name = $tokenInfo['name'];
-                $symbol = $tokenInfo['symbol'];
-                $price = $tokenInfo['price_usd'];
-                $marketCap = $tokenInfo['market_cap_usd'];
-
-                $msg .= "- {$name} | {$symbol} | Price: \${$price} | Market Cap: \${$marketCap}\n";
-            }
+        if ($portfolioInfo->is_roi_shown) {
+            $msg .= "\nPNL: DAY 12% | WEEK 2% | MONTH 15% | ALL TIME 53%";
         }
 
-        $msg .= "\n\nBag Achivments: x2, x3, x4, x10
-          \nToken Achivments: x2 (3), x3 (5), x100 (1)
-          \n\nСтраница 1/3
-          \n\nПоследнее обновление: 13 November 13:05 UTC
-          \n\n-------------------------------------------------
-          \nADS: buy me buy buy buy buy";
+
+        if ($portfolioInfo->is_activities_shown) {
+            $msg .= "\n\nАктивы: {$tokensAmount}/30 активных токенов";
+
+            foreach ($tokens as $token) {
+                $tokenDetails = json_decode($token->api_response, true);
+                if (isset($tokenDetails['data']) && count($tokenDetails['data']) > 0) {
+                    $tokenInfo = $tokenDetails['data'][0]['attributes'];
+
+                    $name = $tokenInfo['name'];
+                    $symbol = $tokenInfo['symbol'];
+                    $price = $tokenInfo['price_usd'];
+                    $marketCap = $tokenInfo['market_cap_usd'];
+
+                    $msg .= "\n- {$name} | {$symbol}";
+                        if($portfolioInfo->is_prices_shown){
+                            $msg .="|Price: \${$price} | Market Cap: \${$marketCap}";
+                        }
+                }
+            }
+        }
+        if ($portfolioInfo->is_achievements_shown) {
+            $msg .= "\nBag Achievements: x2, x3, x4, x10
+        \nToken Achievements: x2 (3), x3 (5), x100 (1)";
+        }
+        $msg .= "\n\nСтраница 1/3
+                 \n\nПоследнее обновление: 13 November 13:05 UTC
+                 \n\n-------------------------------------------------
+                 \nADS: buy me buy buy buy buy";
 
         $markup = [
             'inline_keyboard' => [
-                [['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
-                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']],
-                [['text' => 'Показать все активы', 'callback_data' => '/show_all']],
-                [['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]]
+                [
+                    ['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
+                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                ],
+                [
+                    ['text' => 'Показать все активы', 'callback_data' => '/show_all']
+                ],
+                [
+                    ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]
+                ]
             ],
         ];
+
 
             $this->sendMessage($userId, $msg, $markup);
 

@@ -12,10 +12,10 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('portfolios', function (Blueprint $table) {
-            $table->boolean('is_roi_shown')->default(1)->after('is_private');
-            $table->boolean('is_achievements_shown')->default(1)->after('is_private');
-            $table->boolean('is_activities_shown')->default(1)->after('is_private');
-            $table->boolean('is_prices_shown')->default(1)->after('is_private');
+            $table->boolean('is_roi_shown')->default(1)->after('is_public');
+            $table->boolean('is_achievements_shown')->default(1)->after('is_public');
+            $table->boolean('is_activities_shown')->default(1)->after('is_public');
+            $table->boolean('is_prices_shown')->default(1)->after('is_public');
         });
     }
 
