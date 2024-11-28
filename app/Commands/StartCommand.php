@@ -63,6 +63,9 @@ class StartCommand extends Command
                 [Keyboard::inlineButton(['text' => 'Создать портфель', 'callback_data' => '/create_portfolio'])
             ,
                 Keyboard::inlineButton(['text' => 'Поиск портфеля', 'callback_data' => '/search_portfolio'])]
+            )->row(
+                [Keyboard::inlineButton(['text' => 'Выбрать тип портфеля', 'callback_data' => '/choose_type']),
+                    Keyboard::inlineButton(['text' => 'Настройки', 'callback_data' => '/settings'])]
             );
         $this->replyWithMessage(['text' => 'Привет! Рад снова видеть тебя! Выбери действие:', 'reply_markup' => $keyboard]);
     }

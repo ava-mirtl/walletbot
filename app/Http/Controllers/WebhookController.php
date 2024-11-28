@@ -2,15 +2,15 @@
 
 namespace App\Http\Controllers;
 
-use App\Commands\CreatePortfolioCommand;
 use App\Models\Contract;
 use App\Models\Portfolio;
 use App\Models\PortfolioContract;
 use App\Models\TelegramUser;
 use App\Models\UserState;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
-use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Facades\DB;
 use Telegram\Bot\BotsManager;
 
 class WebhookController extends Controller
@@ -33,14 +33,20 @@ class WebhookController extends Controller
 
         $updateData = $request->all();
         $update = new \Telegram\Bot\Objects\Update($updateData);
-        $this->botsManager->bot()->commandsHandler(true);
         $userId = $update->getChat()->id;
-        if ($update->isType('callback_query')) {
+        $this->botsManager->bot()->commandsHandler(true);
+
+      if ($update->isType('callback_query')) {
             $callbackData = $update->getCallbackQuery()->getData();
             switch ($callbackData) {
                 case '/create_portfolio':
-                    $this->handleBotState($userId, 'portfolio_name','awaiting_portfolio_name');
-                    $this->sendMessage($userId, 'Введите имя вашего портфеля:');
+                    $markup = [
+                        'inline_keyboard' => [
+                            [['text' => 'Публичный (без возможности редактирования)', 'callback_data' => '/portfolio_type_public']],
+                            [['text' => 'Приватный (можно редактировать)', 'callback_data' => '/portfolio_type_private'],]
+                        ]];
+
+                    $this->sendMessage($userId, 'Выберите тип портфеля:', $markup);
                     break;
                 case '/search_portfolio':
                     $this->handleBotState($userId, 'search_portfolio','awaiting_username');
@@ -49,12 +55,10 @@ class WebhookController extends Controller
 
                 case '/portfolio_type_public':
                 case '/portfolio_type_private':
-                    // Передаем 0 или 1 в зависимости от типа портфеля
-                    $userState = UserState::where('telegram_user_id', $userId)->first();
-                    $name = $userState->value;
-                    $portfolio = Portfolio::where('telegram_user_id', $userId)->where('name', $name)->first();
-                    $this->createPortfolio($callbackData === '/portfolio_type_private' ? 1 : 0, $userId, $name, $portfolio);
-                    $this->showPortfolio($portfolio->id, $userId);
+
+                $this->handleBotState($userId, 'awaiting_portfolio_name',$callbackData === '/portfolio_type_private' ? 1 : 0);
+                $this->sendMessage($userId, 'Введите имя портфеля');
+
                     break;
                 case 'eth':
                 case 'sol':
@@ -74,52 +78,23 @@ class WebhookController extends Controller
                 break;
 
                 case '/main_menu':
-                    $markup = ['inline_keyboard' => [
-                        [
-                            ['text' => 'Создать портфель', 'callback_data' => '/create_portfolio'],
-                            ['text' => 'Поиск портфеля', 'callback_data' => '/search_portfolio']
-                        ],
-                    ]];
+                    $markup = [
+                        'inline_keyboard' => [
+                            [
+                                ['text' => 'Создать портфель', 'callback_data' => '/create_portfolio'],
+                                ['text' => 'Поиск портфеля', 'callback_data' => '/search_portfolio']
+
+                            ],
+                            [
+                                ['text' => 'Выбрать тип портфеля', 'callback_data' => '/choose_type'],
+                                ['text' => 'Настройки', 'callback_data' => '/settings']
+                            ]
+                        ]];
                     $this->sendMessage($userId, "Выберите действие:", $markup);
                     break;
-                    //creating token in DB
+//creating token in DB
                 case '/create_token':
-                    $userState = UserState::where('telegram_user_id', $userId)->first();
-                    $tokenData = json_decode($userState->value);
-
-                    // Подготовка данных для токена
-                    $tokenAddress = $tokenData[3]->address; // Получаем адрес токена
-
-                    $token = new Contract();
-                    $token->network = $tokenData[2]->network;
-                    $token->address = $tokenAddress;
-                    $token->tax = $tokenData[4]->tax;
-                    $token->quantity = $tokenData[5]->amount;
-
-                    try {
-                        $client = new \GuzzleHttp\Client();
-                        $response = $client->request('GET', 'https://api.geckoterminal.com/api/v2/networks/'.$tokenData[2]->network.'/tokens/multi/'.$tokenAddress);
-                        $apiResponse = json_decode($response->getBody());
-
-                        if (isset($apiResponse->data)) {
-                            $token->api_response = json_encode($apiResponse);
-                            $token->save();
-
-                            if (isset($tokenData[1]->portfolio_id)) {
-                                $portfolioContract = new PortfolioContract();
-                                $portfolioContract->portfolio_id = $tokenData[1]->portfolio_id;
-                                $portfolioContract->contract_id = $token->id;
-                                $portfolioContract->save();
-                                $txt = 'Токен сохранен';
-                            } else {
-                                $txt = 'Не удалось добавить токен: отсутствует ID портфолио.';
-                            }
-                        } else {
-                            throw new \Exception('Ошибка API: данные токена отсутствуют.');
-                        }
-                    } catch (\Exception $e) {
-                        $txt = 'Не удалось создать токен: ' . $e->getMessage();
-                    }
+                    $txt = $this->createToken($userId);
 
                     $markup = ['inline_keyboard' => [
                         [
@@ -150,25 +125,93 @@ class WebhookController extends Controller
                         ]];
                     $this->sendMessage($userId, 'Выберите сеть:', $markup);
                     break;
-                default:
+//settings block
+                case '/settings';
+                    $markup = [
+                        'inline_keyboard' => [
+                            [
+                                ['text' => 'В настройки', 'callback_data' => '/settings_private'],
+                            ],
+                            [
+                                ['text' => 'Назад', 'callback_data' => '/main_menu'],
+
+                            ],
+                        ]];
+
+                    $this->sendMessage($userId, 'Установить настройки приватности:', $markup);
+                    break;
+              case '/settings_private';
+                    $portfolios = Portfolio::where('telegram_user_id', $userId)->get();
+                    $buttons = [];
+                    foreach ($portfolios as $portfolio) {
+                        $buttons[] = [
+                            'text' => $portfolio->name,
+                            'callback_data' => "/settings_portfolio_{$portfolio->id}"
+                        ];
+                    }
+                    $buttons[] = ['text' => 'Назад', 'callback_data' => '/settings'];
+                    $markup = [
+                        'inline_keyboard' => array_chunk($buttons, 1)
+                    ];
+
+                    $this->sendMessage($userId, 'Выберите портфель:', $markup);
+                  break;
+                case preg_match('/^\/settings_portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                    $portfolioID = $matches[1];
+                    $markup = [
+                        'inline_keyboard' => [
+                            [['text' => "Сделать портфель публичным", 'callback_data' => "/set_public_$portfolioID"]],
+                            [['text' => "Показывать достижения", 'callback_data' => "/show_achievements_$portfolioID"]],
+                            [['text' => "Показывать ROI", 'callback_data' => "/show_roi_$portfolioID"]],
+                            [['text' => "Показывать мои активы", 'callback_data' => "/show_activities_$portfolioID"]],
+                            [['text' => "Показывать количество активов, стоимость", 'callback_data' => "/show_prices_$portfolioID"]],
+                            [['text' => "Назад", 'callback_data' => "/settings_private"]],
+                        ]
+                    ];
+
+                    $this->sendMessage($userId, "Настройки приватности портфеля", $markup);
+                    break;
+
+              case preg_match('/^\/set_public_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $portfolioID = $matches[1];
+                  $this->handlePortfolioSettings($portfolioID, 'is_public', $userId, 'сделать публичным');
+                  break;
+
+              case preg_match('/^\/show_achievements_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $portfolioID = $matches[1];
+                  $this->handlePortfolioSettings($portfolioID, 'is_achievements_shown', $userId, 'показать достижения');
+                  break;
+
+              case preg_match('/^\/show_roi_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $portfolioID = $matches[1];
+                  $this->handlePortfolioSettings($portfolioID, 'is_roi_shown', $userId, 'показать ROI');
+                  break;
+
+              case preg_match('/^\/show_activities_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $portfolioID = $matches[1];
+                  $this->handlePortfolioSettings($portfolioID, 'is_activities_shown', $userId, 'показать активы');
+                  break;
+
+              case preg_match('/^\/show_prices_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $portfolioID = $matches[1];
+                  $this->handlePortfolioSettings($portfolioID, 'is_prices_shown', $userId, 'показать количество и стоимость активов');
+                  break;
+
+              default:
                     break;
             }
         } elseif ($update->isType('message')) {
             $userState = UserState::where('telegram_user_id', $userId)->first();
-            //создание портфеля
-            if ( $userState && $userState->value === 'awaiting_portfolio_name') {
-                $portfolioName = $update->getMessage()->getText();
-                $this->handleBotState($userId, $step = null ,$portfolioName);
-                $markup = [
-                    'inline_keyboard' => [
-                        [
-                            ['text' => 'Публичный', 'callback_data' => '/portfolio_type_public'],
-                            ['text' => 'Приватный', 'callback_data' => '/portfolio_type_private'],
-                        ]
-                    ]];
-                $this->sendMessage($userId, "Вы ввели имя портфеля: *{$portfolioName}*.\nТеперь выберите тип портфеля:", $markup);
+//создание портфеля
+            if ( $userState && $userState->step === 'awaiting_portfolio_name') {
+                $name = $update->getMessage()->getText();
+                $type = $userState->value;
+                $portfolio = Portfolio::where('telegram_user_id', $userId)->where('name', $name)->first();
+                $this->createPortfolio($type, $userId, $name, $portfolio);
+                $userState->delete();
+                $this->showPortfolio($portfolio->id, $userId);
             }
-            //поиск портфеля по юзернейму
+//поиск портфеля по юзернейму
             elseif ($userState && $userState->value === 'awaiting_username'){
                 $username = $update->getMessage()->getText();
                 $user = TelegramUser::where('username', $username)->first();
@@ -212,6 +255,7 @@ class WebhookController extends Controller
                 }
                 $this->sendMessage($userId,  $text, $markup);
             }
+ //token+
             elseif($userState && $userState->step === 'awaiting_token_address'){
                 $data = json_decode($userState->value);
 
@@ -247,6 +291,10 @@ class WebhookController extends Controller
 
                 $this->handleBotState($userId, 'awaiting_agree', $jsondata);
                 $this->sendMessage($userId, $text, $markup);
+            }
+
+            elseif ($update->getMessage()->getText() ==='/start'){
+                //чтобы не присылало дефолтное сообщение на команду
             }
             else{
                 $text = "Прошу прощения, непонятная команда. Я еще маленький бот и не умею распозновать все входящие запросы. Вы можете вернуться в меню и попробовать еще раз.";
@@ -358,5 +406,67 @@ class WebhookController extends Controller
 
 
     }
+    protected function createToken($userId)
+    {
+        $userState = UserState::where('telegram_user_id', $userId)->first();
+        $tokenData = json_decode($userState->value);
+
+        // Подготовка данных для токена
+        $tokenAddress = $tokenData[3]->address; // Получаем адрес токена
+
+        $token = new Contract();
+        $token->network = $tokenData[2]->network;
+        $token->address = $tokenAddress;
+        $token->tax = $tokenData[4]->tax;
+        $token->quantity = $tokenData[5]->amount;
+
+        try {
+            $client = new \GuzzleHttp\Client();
+            $response = $client->request('GET', 'https://api.geckoterminal.com/api/v2/networks/'.$tokenData[2]->network.'/tokens/multi/'.$tokenAddress);
+            $apiResponse = json_decode($response->getBody());
+            if (isset($apiResponse->data)) {
+                $token->api_response = json_encode($apiResponse);
+                $token->save();
+
+                if (isset($tokenData[1]->portfolio_id)) {
+                    $portfolioContract = new PortfolioContract();
+                    $portfolioContract->portfolio_id = $tokenData[1]->portfolio_id;
+                    $portfolioContract->contract_id = $token->id;
+                    $portfolioContract->save();
+                    return 'Токен сохранен';
+                } else {
+                    return 'Не удалось добавить токен: отсутствует ID портфолио.';
+                }
+            } else {
+                throw new \Exception('Ошибка API: данные токена отсутствуют.');
+            }
+        } catch (\Exception $e) {
+            return 'Не удалось создать токен: ' . $e->getMessage();
+        }
+    }
+    public function handlePortfolioSettings($portfolioID, $attribute, $userId, $text_attribute) {
+        $markup = [
+            'inline_keyboard' => [
+                [['text' => "Назад", 'callback_data' => "/settings_portfolio_$portfolioID"]],
+            ]
+        ];
+                try {
+                    DB::transaction(function () use ($portfolioID, $attribute, ) {
+                        $portfolio = Portfolio::find($portfolioID);
+
+                        if ($portfolio) {
+                            $portfolio->$attribute = 1;
+                            $portfolio->save();
+                        } else {
+                            throw new \Exception('Портфель не найден.');
+                        }
+                    });
+                    $this->sendMessage($userId, "Настройки свойства \"$text_attribute\" применились", $markup);
+                } catch (QueryException $e) {
+                    $this->sendMessage($userId, "Ошибка при обновлении портфеля: " . $e->getMessage(), $markup);
+                } catch (\Exception $e) {
+                    $this->sendMessage($userId, "Произошла ошибка: " . $e->getMessage(), $markup);
+                }
+            }
 
 }

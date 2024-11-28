@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('telegram_user_id')->constrained('telegram_users')->onDelete('cascade');
             $table->string('name')->nullable();
-            $table->boolean('is_private')->default(0);
+            $table->boolean('is_public')->default(0);
             $table->timestamps();
         });
     }
