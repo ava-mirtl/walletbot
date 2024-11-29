@@ -343,7 +343,7 @@ class WebhookController extends Controller
                 $tokens = Portfolio::find($userState->value)->tokens;
               if (isset($tokens[$index])) {
                   $token = $tokens[$index];
-                  $this->showToken($token);
+                  $this->showToken($token, $userState->value, $userId);
               } else {
                   $this->sendMessage($userId, "Токен с номером {$i} не найден.");
               }
@@ -504,22 +504,33 @@ class WebhookController extends Controller
 
 
     }
-    protected function showToken($token){
-//        $txt = "Статистика по токену $PAAL - PAAL AI:
-//        CA: 0x13E4b8CfFe704d3De6F19E52b201d92c21EC18bD
-//        Баланс: 3412$/6524 $PAAL (1.1 eth)
-//
-//        MCAP 192M | 70% value
-//         Current price: 1.292 $ | AOV: 1.09$
-//        PNL: DAY: 17% | WEEK: 2% | MONTH: 23% | ALL TIME: 53%
-//
-//        История транзакций:
-//        Buy: 24 июня 1234 $PAAL/12$ (цена покупки 0.003$)
-//        Buy: 28 июня 255 $PAAL/100$ (цена покупки 0.025$)
-//        Sell: 17 августа 1500 $PAAL/4444$ (цена продажи 0.028)
-//
-//        Token Achivements: X2, X5, X10";
+    protected function showToken($token, $portfolioID, $userId){
 
+        $txt = "Статистика по токену $token->symbol - $token->name:
+        CA: $token->address
+        Баланс: 3412$/6524 $token->symbol (1.1 $token->network)
+
+        MCAP 192M | 70% value
+         Current price: 1.292 $ | AOV: 1.09$
+        PNL: DAY: 17% | WEEK: 2% | MONTH: 23% | ALL TIME: 53%
+
+        История транзакций:
+        Buy: 24 июня 1234 $token->symbol/12$ (цена покупки 0.003$)
+        Buy: 28 июня 255 $token->symbol/100$ (цена покупки 0.025$)
+        Sell: 17 августа 1500 $token->symbol/4444$ (цена продажи 0.028)
+
+        Token Achivements: X2, X5, X10";
+
+       $markup = [
+            'inline_keyboard' => [
+
+                [['text' => "Купить $token->symbol", 'callback_data' => "/buy_token_$token->id"],
+                ['text' => "Продать $token->symbol", 'callback_data' => "/sell_token_$token->id"]],
+                [['text' => "В портфель", 'callback_data' => "/portfolio_$portfolioID"],
+                 ['text' => "Обновить PNL", 'callback_data' => "/reload_$token->id"]],
+            ]
+        ];
+        $this->sendMessage($userId, $txt, $markup);
     }
     protected function createToken($userId)
     {
