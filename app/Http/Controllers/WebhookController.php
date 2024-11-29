@@ -56,7 +56,7 @@ class WebhookController extends Controller
                 case '/portfolio_type_public':
                 case '/portfolio_type_private':
 
-                $this->handleBotState($userId, 'awaiting_portfolio_name',$callbackData === '/portfolio_type_private' ? 1 : 0);
+                $this->handleBotState($userId, 'awaiting_portfolio_name',$callbackData === '/portfolio_type_public' ? 1 : 0);
                 $this->sendMessage($userId, 'Введите имя портфеля');
 
                     break;
@@ -86,7 +86,7 @@ class WebhookController extends Controller
 
                             ],
                             [
-                                ['text' => 'Выбрать тип портфеля', 'callback_data' => '/choose_type'],
+                                ['text' => 'Мои портфели', 'callback_data' => '/choose_type'],
                                 ['text' => 'Настройки', 'callback_data' => '/settings']
                             ]
                         ]];
@@ -103,11 +103,17 @@ class WebhookController extends Controller
                     ]];
                     $this->sendMessage($userId, $txt, $markup);
                     break;
-                case preg_match('/^\/portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
-                    $portfolioId = $matches[1];
-                    $this->showPortfolio($portfolioId, $userId);
-                    break;
-                case preg_match('/^\/add_token_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+              case preg_match('/^\/foreign_portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                  $portfolioId = $matches[1];
+                  $this->showPortfolio($portfolioId, $userId, true);
+                  break;
+
+              case preg_match('/^\/portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                  $portfolioId = $matches[1];
+                  $this->showPortfolio($portfolioId, $userId, false);
+                  break;
+
+              case preg_match('/^\/add_token_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                     $portfolioId = $matches[1];
                     $this->handleBotState($userId, 'awaiting_token_network', $portfolioId);
                     $markup = [
@@ -125,6 +131,34 @@ class WebhookController extends Controller
                         ]];
                     $this->sendMessage($userId, 'Выберите сеть:', $markup);
                     break;
+              case '/choose_type':
+                  $markup = [
+                      'inline_keyboard' => [
+                          [
+                              ['text' => 'Публичный', 'callback_data' => '/choose_public'],
+                              ['text' => 'Приватный', 'callback_data' => '/choose_private'],
+                          ],
+                      ]];
+                  $this->sendMessage($userId, 'Выберите тип портфеля:', $markup);
+                  break;
+
+              case '/choose_public':
+              case '/choose_private':
+                  $portfolios = Portfolio::where('telegram_user_id', $userId)->where('is_public', $callbackData === '/choose_public' ? 1 : 0)->get();
+                  $buttons = [];
+                  foreach ($portfolios as $portfolio) {
+                      $buttons[] = [
+                          'text' => $portfolio->name,
+                          'callback_data' => "/portfolio_{$portfolio->id}"
+                      ];
+                  }
+                  $buttons[] = ['text' => 'Назад', 'callback_data' => '/choose_type'];
+                  $markup = [
+                      'inline_keyboard' => array_chunk($buttons, 1)
+                  ];
+
+                  $this->sendMessage($userId, 'Выберите портфель:', $markup);
+              break;
 //settings block
                 case '/settings';
                     $markup = [
@@ -196,7 +230,12 @@ class WebhookController extends Controller
                   $portfolioID = $matches[1];
                   $this->handlePortfolioSettings($portfolioID, 'is_prices_shown', $userId, 'показать количество и стоимость активов');
                   break;
+              case preg_match('/^\/find_token_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $portfolioID = $matches[1];
+                  $this->handleBotState($userId, 'awaiting_token_index', $portfolioID);
+                  $this->sendMessage($userId, "Введите номер актива");
 
+                  break;
               default:
                     break;
             }
@@ -209,7 +248,7 @@ class WebhookController extends Controller
                 $portfolio = Portfolio::where('telegram_user_id', $userId)->where('name', $name)->first();
                 $this->createPortfolio($type, $userId, $name, $portfolio);
                 $userState->delete();
-                $this->showPortfolio($portfolio->id, $userId);
+                $this->showPortfolio($portfolio->id, $userId, false);
             }
 //поиск портфеля по юзернейму
             elseif ($userState && $userState->value === 'awaiting_username'){
@@ -224,26 +263,31 @@ class WebhookController extends Controller
                         ],
                     ];
                     $this->sendMessage($userId, "Пользователь с username @{$username} не найден.", $markup);
+                    $userState->delete();
                     return response(null, 200);
                 }
 
-                $portfolio = $user->portfolio()->get();
-                $this->handleBotState($userId, 'choose_portfolio',$username);
-                if(count($portfolio)){
-                    $text = "У @{$user->username} найдено:";
+                $portfolio = $user->portfolio()->where('is_public', true)->get();
+                $this->handleBotState($userId, 'choose_portfolio', $username);
+
+                if (count($portfolio)) {
+                    $text = "У @{$user->username} доступны портфели:";
                     $premarkup = [];
                     foreach ($portfolio as $item) {
                         $premarkup[] = [[
                             "text" => $item->name,
-                            "callback_data" => '/portfolio_' . $item->id,
+                            "callback_data" => '/foreign_portfolio_'.$item->id,
                         ]];
                     }
+                    $premarkup[] = [[
+                        "text" => "Назад",
+                        "callback_data" => '/search_portfolio',
+                    ]];
                     $markup = [
                         'inline_keyboard' => $premarkup
                     ];
-                }
-                else{
-                    $text = "У @{$user->username} не найдено доступных портфелей";
+                } else {
+                    $text = "У @{$user->username} не найдено доступных публичных портфелей";
 
                     $markup = [
                         'inline_keyboard' => [
@@ -253,7 +297,7 @@ class WebhookController extends Controller
                         ],
                     ];
                 }
-                $this->sendMessage($userId,  $text, $markup);
+                $this->sendMessage($userId, $text, $markup);
             }
  //token+
             elseif($userState && $userState->step === 'awaiting_token_address'){
@@ -292,7 +336,18 @@ class WebhookController extends Controller
                 $this->handleBotState($userId, 'awaiting_agree', $jsondata);
                 $this->sendMessage($userId, $text, $markup);
             }
-
+//показать токен по номеру
+          elseif ($userState && $userState->step === 'awaiting_token_index'){
+                $i = $update->getMessage()->getText();
+                $index = $i - 1;
+                $tokens = Portfolio::find($userState->value)->tokens;
+              if (isset($tokens[$index])) {
+                  $token = $tokens[$index];
+                  $this->showToken($token);
+              } else {
+                  $this->sendMessage($userId, "Токен с номером {$i} не найден.");
+              }
+          }
             elseif ($update->getMessage()->getText() ==='/start'){
                 //чтобы не присылало дефолтное сообщение на команду
             }
@@ -313,13 +368,13 @@ class WebhookController extends Controller
     public function createPortfolio($type, $userId, $name, $portfolio)
     {
         if ($portfolio) {
-            $portfolio->is_private = $type;
+            $portfolio->is_public = $type;
             $portfolio->save();
         } else {
             $portfolio = new Portfolio();
             $portfolio->telegram_user_id = $userId;
             $portfolio->name = $name;
-            $portfolio->is_private = $type;
+            $portfolio->is_public = $type;
             $portfolio->save();
         }
     }
@@ -356,7 +411,7 @@ class WebhookController extends Controller
             $newUserState->save();
         }
     }
-    private function showPortfolio($portfolioID, $userId)
+    private function showPortfolio($portfolioID, $userId, $isForeign)
     {
         //ToDo: формула баланса, PNL
         $portfolioInfo = Portfolio::findOrFail($portfolioID);
@@ -402,25 +457,68 @@ class WebhookController extends Controller
                  \n\nПоследнее обновление: 13 November 13:05 UTC
                  \n\n-------------------------------------------------
                  \nADS: buy me buy buy buy buy";
-
-        $markup = [
-            'inline_keyboard' => [
-                [
-                    ['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
-                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+        if($isForeign){
+            $markup = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
+                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                    ],
+                    [
+                        ['text' => 'Назад', 'callback_data' => '/']
+                    ],
+                    [
+                        ['text' => 'Вперед', 'callback_data' => "/"]
+                    ]
                 ],
-                [
-                    ['text' => 'Показать все активы', 'callback_data' => '/show_all']
+            ];
+        }
+        else{
+            $markup = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
+                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                    ],
+                    [
+                        ['text' => 'Показать все активы', 'callback_data' => '/show_all']
+                    ],
+                    [
+                        ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]
+                    ],
+                    [
+                        ['text' => 'Перейти в актив', 'callback_data' => "/find_token_$portfolioID"]
+                    ],
+                    [
+                        ['text' => 'Назад', 'callback_data' => '/']
+                    ],
+                    [
+                        ['text' => 'Вперед', 'callback_data' => "/"]
+                    ]
                 ],
-                [
-                    ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]
-                ]
-            ],
-        ];
+            ];
+        }
 
 
             $this->sendMessage($userId, $msg, $markup);
 
+
+    }
+    protected function showToken($token){
+//        $txt = "Статистика по токену $PAAL - PAAL AI:
+//        CA: 0x13E4b8CfFe704d3De6F19E52b201d92c21EC18bD
+//        Баланс: 3412$/6524 $PAAL (1.1 eth)
+//
+//        MCAP 192M | 70% value
+//         Current price: 1.292 $ | AOV: 1.09$
+//        PNL: DAY: 17% | WEEK: 2% | MONTH: 23% | ALL TIME: 53%
+//
+//        История транзакций:
+//        Buy: 24 июня 1234 $PAAL/12$ (цена покупки 0.003$)
+//        Buy: 28 июня 255 $PAAL/100$ (цена покупки 0.025$)
+//        Sell: 17 августа 1500 $PAAL/4444$ (цена продажи 0.028)
+//
+//        Token Achivements: X2, X5, X10";
 
     }
     protected function createToken($userId)
