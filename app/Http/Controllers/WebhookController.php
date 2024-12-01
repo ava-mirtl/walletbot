@@ -60,22 +60,6 @@ class WebhookController extends Controller
                 $this->sendMessage($userId, 'Введите имя портфеля');
 
                     break;
-                case 'eth':
-                case 'sol':
-                case 'bsc':
-                case 'trx':
-                case 'base':
-                case 'ton':
-                $userState = UserState::where('telegram_user_id', $userId)->first();
-                $portfolioID = $userState->value;
-                $data = json_encode([
-                    ['telegram_user_id' => $userId],
-                    ['portfolio_id' =>  $portfolioID],
-                    ['network' => $callbackData]
-                ]);
-                $this->handleBotState($userId, 'awaiting_token_address', $data);
-                $this->sendMessage($userId, 'Введите адрес операции:');
-                break;
 
                 case '/main_menu':
                     $markup = [
@@ -94,11 +78,14 @@ class WebhookController extends Controller
                     break;
 //creating token in DB
                 case '/create_token':
-                    $txt = $this->createToken($userId);
-
+                    $userState = UserState::where('telegram_user_id', $userId)->first();
+                    $tokenData = json_decode($userState->value);
+                    $portfolio_id = $tokenData[1]->portfolio_id;
+                    $txt = $this->createToken($userId, $tokenData);
                     $markup = ['inline_keyboard' => [
                         [
-                            ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                            ['text' => 'В портфель', 'callback_data' => "/portfolio_$portfolio_id"],
+                            ['text' => 'В главное меню', 'callback_data' => "/main_menu"]
                         ],
                     ]];
                     $this->sendMessage($userId, $txt, $markup);
@@ -131,6 +118,23 @@ class WebhookController extends Controller
                         ]];
                     $this->sendMessage($userId, 'Выберите сеть:', $markup);
                     break;
+              case 'eth':
+              case 'sol':
+              case 'bsc':
+              case 'trx':
+              case 'base':
+              case 'ton':
+                  $userState = UserState::where('telegram_user_id', $userId)->first();
+                  $portfolioID = $userState->value;
+                  $data = json_encode([
+                      ['telegram_user_id' => $userId],
+                      ['portfolio_id' =>  $portfolioID],
+                      ['network' => $callbackData]
+                  ]);
+                  $this->handleBotState($userId, 'awaiting_token_address', $data);
+                  $this->sendMessage($userId, 'Введите адрес операции:');
+                  break;
+
               case '/choose_type':
                   $markup = [
                       'inline_keyboard' => [
@@ -302,9 +306,7 @@ class WebhookController extends Controller
  //token+
             elseif($userState && $userState->step === 'awaiting_token_address'){
                 $data = json_decode($userState->value);
-
                 $data[3] = ['address' => $update->getMessage()->getText()];
-
                 $jsondata = json_encode($data);
                 $this->handleBotState($userId, 'awaiting_tax', $jsondata);
                 $this->sendMessage($userId, 'Введите сколько процентов составил налог (только цифры):');
@@ -316,26 +318,62 @@ class WebhookController extends Controller
                 $this->handleBotState($userId, 'awaiting_amount', $jsondata);
                 $this->sendMessage($userId, 'Введите количество токенов (только цифры):');
             }
-            elseif($userState && $userState->step === 'awaiting_amount'){
-                $data = json_decode($userState->value);
-                $amount = $update->getMessage()->getText();
-                $network = $data[2]->network;
-                $tax = $data[4]->tax;
-                $data[5] = ['amount' => $amount];
-                $markup = [
-                    'inline_keyboard' => [
-                        [
-                            ['text' => 'Нет', 'callback_data' => '/main_menu'],
-                            ['text' => 'Да', 'callback_data' => '/create_token']
+          elseif ($userState && $userState->step === 'awaiting_amount') {
+              $amount = $update->getMessage()->getText();
+              $userInsert = json_decode($userState->value);
+              $network = $userInsert[2]->network;
+              $address = $userInsert[3]->address;
+              $tax = $userInsert[4]->tax;
+              $portfolio = $userInsert[1]->portfolio_id;
+              try {
+                  $client = new \GuzzleHttp\Client();
+                  $response = $client->request('GET', 'https://api.geckoterminal.com/api/v2/networks/' . $network . '/tokens/multi/' . $address);
+                  $apiResponse = json_decode($response->getBody());
 
-                        ]]];
-                $text = "Подтвердите правильность транзакции: \n\n
-                Buy: $amount $network Tax: $tax%";
-                $jsondata = json_encode($data);
+                  if (isset($apiResponse->data) && count($apiResponse->data) > 0) {
+                      $tokenAttributes = $apiResponse->data[0]->attributes;
+                      $basePrice = $tokenAttributes->price_usd * $amount;
+                      $taxAmount = ($basePrice * $tax) / 100;
+                      $totalPrice = round($basePrice + $taxAmount, 1);
 
-                $this->handleBotState($userId, 'awaiting_agree', $jsondata);
-                $this->sendMessage($userId, $text, $markup);
-            }
+                      $text = "Подтвердите правильность транзакции:
+                    \n\n Buy: $amount {$tokenAttributes->symbol} ~ {$totalPrice}$ (включая Tax: $tax%)";
+
+                      $markup = [
+                          'inline_keyboard' => [
+                              [
+                                  ['text' => 'Нет', 'callback_data' => '/main_menu'],
+                                  ['text' => 'Да', 'callback_data' => '/create_token']
+                              ]
+                          ]
+                      ];
+
+                      $userInsert[5] = ['amount' => $amount];
+                      $userInsert[6] = ['tokenAttributes' => $tokenAttributes];
+                      $jsondata = json_encode($userInsert);
+                      $this->handleBotState($userId, 'awaiting_agree', $jsondata);
+
+                  } else {
+                      $text = 'Ошибка API: данные токена отсутствуют.';
+                      $markup = [
+                          'inline_keyboard' => [
+                              [
+                                  ['text' => 'Назад', 'callback_data' => "/portfolio_$portfolio"],
+                              ]
+                          ]];
+                  }
+              } catch (\Exception $e) {
+                  $text =  'Ошибка при получении данных токена: ' . $e->getMessage();
+                  $markup = [
+                      'inline_keyboard' => [
+                          [
+                              ['text' => 'Назад', 'callback_data' => '/main_menu'],
+                          ]
+                      ]];
+              }
+              $this->sendMessage($userId, $text, $markup);
+          }
+
 //показать токен по номеру
           elseif ($userState && $userState->step === 'awaiting_token_index'){
                 $i = $update->getMessage()->getText();
@@ -532,42 +570,32 @@ class WebhookController extends Controller
         ];
         $this->sendMessage($userId, $txt, $markup);
     }
-    protected function createToken($userId)
+    protected function createToken($userId, $tokenData)
     {
-        $userState = UserState::where('telegram_user_id', $userId)->first();
-        $tokenData = json_decode($userState->value);
-
-        // Подготовка данных для токена
-        $tokenAddress = $tokenData[3]->address; // Получаем адрес токена
-
+        $tokenAddress = $tokenData[3]->address;
         $token = new Contract();
         $token->network = $tokenData[2]->network;
         $token->address = $tokenAddress;
         $token->tax = $tokenData[4]->tax;
         $token->quantity = $tokenData[5]->amount;
+        $token->name = $tokenData[6]->tokenAttributes->name;
+        $token->symbol = $tokenData[6]->tokenAttributes->symbol;
+        $token->price_usd = $tokenData[6]->tokenAttributes->price_usd ? (float)$tokenData[6]->tokenAttributes->price_usd : null;
+        $token->market_cap_usd = $tokenData[6]->tokenAttributes->market_cap_usd ? (float)$tokenData[6]->tokenAttributes->market_cap_usd : null;
+        $token->fdv_usd = $tokenData[6]->tokenAttributes->fdv_usd ? (float)$tokenData[6]->tokenAttributes->fdv_usd : null;
+        $token->total_supply = $tokenData[6]->tokenAttributes->total_supply ? (float)str_replace('.', '', $tokenData[6]->tokenAttributes->total_supply) : null;
+        $token->total_reserve_in_usd = $tokenData[6]->tokenAttributes->total_reserve_in_usd ? (float)$tokenData[6]->tokenAttributes->total_reserve_in_usd : null;
+        $token->volume_usd_h24 = $tokenData[6]->tokenAttributes->volume_usd->h24 ? (float)$tokenData[6]->tokenAttributes->volume_usd->h24 : null;
+        $token->save();
 
-        try {
-            $client = new \GuzzleHttp\Client();
-            $response = $client->request('GET', 'https://api.geckoterminal.com/api/v2/networks/'.$tokenData[2]->network.'/tokens/multi/'.$tokenAddress);
-            $apiResponse = json_decode($response->getBody());
-            if (isset($apiResponse->data)) {
-                $token->api_response = json_encode($apiResponse);
-                $token->save();
-
-                if (isset($tokenData[1]->portfolio_id)) {
-                    $portfolioContract = new PortfolioContract();
-                    $portfolioContract->portfolio_id = $tokenData[1]->portfolio_id;
-                    $portfolioContract->contract_id = $token->id;
-                    $portfolioContract->save();
-                    return 'Токен сохранен';
-                } else {
-                    return 'Не удалось добавить токен: отсутствует ID портфолио.';
-                }
-            } else {
-                throw new \Exception('Ошибка API: данные токена отсутствуют.');
-            }
-        } catch (\Exception $e) {
-            return 'Не удалось создать токен: ' . $e->getMessage();
+         if (isset($tokenData[1]->portfolio_id)) {
+            $portfolioContract = new PortfolioContract();
+            $portfolioContract->portfolio_id = $tokenData[1]->portfolio_id;
+            $portfolioContract->contract_id = $token->id;
+            $portfolioContract->save();
+            return 'Токен сохранен';
+        } else {
+            return 'Не удалось добавить токен: отсутствует ID портфолио.';
         }
     }
     public function handlePortfolioSettings($portfolioID, $attribute, $userId, $text_attribute) {

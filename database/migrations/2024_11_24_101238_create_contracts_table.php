@@ -23,7 +23,7 @@ return new class extends Migration
             $table->decimal('price_usd', 20, 10)->nullable();
             $table->decimal('market_cap_usd', 20, 10)->nullable();
             $table->decimal('fdv_usd', 20, 10)->nullable();
-            $table->bigInteger('total_supply')->nullable();
+            $table->decimal('total_supply', 30, 0)->nullable();
             $table->decimal('total_reserve_in_usd', 20, 10)->nullable();
             $table->decimal('volume_usd_h24', 20, 10)->nullable();
             $table->timestamps();

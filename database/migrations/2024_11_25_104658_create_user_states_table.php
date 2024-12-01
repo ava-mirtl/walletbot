@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('telegram_user_id')->constrained('telegram_users')->onDelete('cascade');
             $table->string('step')->nullable();
-            $table->string('value')->nullable();
+            $table->text('value')->nullable();
             $table->timestamps();
         });
     }
