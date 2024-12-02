@@ -6,7 +6,9 @@ use App\Models\Contract;
 use App\Models\Portfolio;
 use App\Models\PortfolioContract;
 use App\Models\TelegramUser;
+use App\Models\Transaction;
 use App\Models\UserState;
+use Exception;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -164,7 +166,7 @@ class WebhookController extends Controller
                   $this->sendMessage($userId, 'Выберите портфель:', $markup);
               break;
 //settings block
-                case '/settings';
+                case '/settings':
                     $markup = [
                         'inline_keyboard' => [
                             [
@@ -178,7 +180,7 @@ class WebhookController extends Controller
 
                     $this->sendMessage($userId, 'Установить настройки приватности:', $markup);
                     break;
-              case '/settings_private';
+              case '/settings_private':
                     $portfolios = Portfolio::where('telegram_user_id', $userId)->get();
                     $buttons = [];
                     foreach ($portfolios as $portfolio) {
@@ -194,6 +196,7 @@ class WebhookController extends Controller
 
                     $this->sendMessage($userId, 'Выберите портфель:', $markup);
                   break;
+
                 case preg_match('/^\/settings_portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                     $portfolioID = $matches[1];
                     $markup = [
@@ -238,7 +241,52 @@ class WebhookController extends Controller
                   $portfolioID = $matches[1];
                   $this->handleBotState($userId, 'awaiting_token_index', $portfolioID);
                   $this->sendMessage($userId, "Введите номер актива");
+                  break;
+              case preg_match('/^\/buy_token_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $type = 'buy';
+                  $portfolioID = UserState::where('telegram_user_id', $userId)->first()->value;
+                  $data = [];
+                  $data['token_id'] = $matches[1];
+                  $data['type'] = $type;
+                  $data['portfolio_id'] = $portfolioID;
+                  $dataX = json_encode($data);
+                  $this->handleBotState($userId, 'awaiting_token_quantity', $dataX);
+                  $this->sendMessage($userId, "Введите количество токена");
+                  break;
 
+              case preg_match('/^\sell_token_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $type = 'sell';
+                  $portfolioID = UserState::where('telegram_user_id', $userId)->first()->value;
+                  $data = [];
+                  $data['token_id'] = $matches[1];
+                  $data['type'] = $type;
+                  $data['portfolio_id'] = $portfolioID;
+                  $dataX = json_encode($data);
+                  $this->handleBotState($userId, 'awaiting_token_quantity', $dataX);
+                  $this->sendMessage($userId, "Введите количество токена");
+                  break;
+              case '/disagree':
+                  $userState = UserState::where('telegram_user_id', $userId)->first();
+                  $existingData = json_decode($userState->value, true);
+                  $portfolio_id =  $existingData['portfolio_id'];
+                  $token = Contract::find($existingData['token_id']);
+                  $this->showToken($token,$portfolio_id ,$userId);
+                  break;
+              case '/agree':
+                  $userState = UserState::where('telegram_user_id', $userId)->first();
+                  $existingData = json_decode($userState->value, true);
+                  $type =  $existingData['type'];
+                  $token = Contract::find($existingData['token_id']);
+                  $portfolio_id =  $existingData['portfolio_id'];
+                    if ($type === "buy"){
+//toDo: add transaction, api method to calculate price, +=amount
+                    }
+                    elseif ($type === "sell"){
+//toDo: add transaction, api method to calculate price, -=amount
+
+                     }
+
+                  $this->showToken($token,$portfolio_id ,$userId);
                   break;
               default:
                     break;
@@ -271,7 +319,7 @@ class WebhookController extends Controller
                     return response(null, 200);
                 }
 
-                $portfolio = $user->portfolio()->where('is_public', true)->get();
+                $portfolio = $user->portfolio()->where('is_public', 1)->get();
                 $this->handleBotState($userId, 'choose_portfolio', $username);
 
                 if (count($portfolio)) {
@@ -376,7 +424,7 @@ class WebhookController extends Controller
 
 //показать токен по номеру
           elseif ($userState && $userState->step === 'awaiting_token_index'){
-                $i = $update->getMessage()->getText();
+                $i = intval($update->getMessage()->getText());
                 $index = $i - 1;
                 $tokens = Portfolio::find($userState->value)->tokens;
               if (isset($tokens[$index])) {
@@ -386,6 +434,32 @@ class WebhookController extends Controller
                   $this->sendMessage($userId, "Токен с номером {$i} не найден.");
               }
           }
+          elseif ($userState && $userState->step === 'awaiting_token_quantity'){
+              $amount = $update->getMessage()->getText();
+              $existingData = json_decode($userState->value, true);
+              $existingData['amount'] = $amount;
+              $data = json_encode($existingData);
+              $this->handleBotState($userId, 'awaiting_token_tax', $data);
+              $this->sendMessage($userId, "Введите % налога");
+          }
+          elseif ($userState && $userState->step === 'awaiting_token_tax') {
+              $tax = $update->getMessage()->getText();
+              $existingData = json_decode($userState->value, true);
+              $existingData['tax'] = $tax;
+              $data = json_encode($existingData);
+              $this->handleBotState($userId, 'awaiting_token_agreement', $data);
+
+              $markup = [
+                  'inline_keyboard' => [
+                      [
+                          ['text' => 'Нет', 'callback_data' => '/disagree'],
+                          ['text' => 'Да', 'callback_data' => '/agree']
+                      ]
+                  ]
+              ];
+              $this->sendMessage($userId, 'Введите подтверждение налоговой ставки', $markup);
+          }
+
             elseif ($update->getMessage()->getText() ==='/start'){
                 //чтобы не присылало дефолтное сообщение на команду
             }
@@ -451,7 +525,8 @@ class WebhookController extends Controller
     }
     private function showPortfolio($portfolioID, $userId, $isForeign)
     {
-        //ToDo: формула баланса, PNL
+        //ToDo: формула баланса, PNL $total
+
         $portfolioInfo = Portfolio::findOrFail($portfolioID);
         $author = $portfolioInfo->author;
         $tokens = $portfolioInfo->tokens;
@@ -462,34 +537,32 @@ class WebhookController extends Controller
         $msg = "{$portfolioInfo->name}: @{$author->username}
                \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)";
 
-        if ($portfolioInfo->is_roi_shown) {
+        if ($portfolioInfo->is_roi_shown||!$isForeign) {
             $msg .= "\nPNL: DAY 12% | WEEK 2% | MONTH 15% | ALL TIME 53%";
         }
 
 
-        if ($portfolioInfo->is_activities_shown) {
+        if ($portfolioInfo->is_activities_shown||!$isForeign) {
             $msg .= "\n\nАктивы: {$tokensAmount}/30 активных токенов";
 
             foreach ($tokens as $token) {
-                $tokenDetails = json_decode($token->api_response, true);
-                if (isset($tokenDetails['data']) && count($tokenDetails['data']) > 0) {
-                    $tokenInfo = $tokenDetails['data'][0]['attributes'];
 
-                    $name = $tokenInfo['name'];
-                    $symbol = $tokenInfo['symbol'];
-                    $price = $tokenInfo['price_usd'];
-                    $marketCap = $tokenInfo['market_cap_usd'];
 
-                    $msg .= "\n- {$name} | {$symbol}";
-                        if($portfolioInfo->is_prices_shown){
-                            $msg .="|Price: \${$price} | Market Cap: \${$marketCap}";
+                    $name = $token->name;
+                    $symbol = $token->symbol;
+                    $price = $token->price_usd;
+                    $network =  strtoupper($token->network);
+                    $amount = $token->quantity;
+                    $current_price = round($amount * $token->current_price);
+                    $msg .= "\n- {$name} | $amount {$symbol} ~ $current_price$ | $network";
+                        if($portfolioInfo->is_prices_shown||!$isForeign){
+                            $msg .=" | Price: \${$price}";
                         }
                 }
-            }
         }
-        if ($portfolioInfo->is_achievements_shown) {
+        if ($portfolioInfo->is_achievements_shown||!$isForeign) {
             $msg .= "\nBag Achievements: x2, x3, x4, x10
-        \nToken Achievements: x2 (3), x3 (5), x100 (1)";
+                \nToken Achievements: x2 (3), x3 (5), x100 (1)";
         }
         $msg .= "\n\nСтраница 1/3
                  \n\nПоследнее обновление: 13 November 13:05 UTC
@@ -536,28 +609,34 @@ class WebhookController extends Controller
                 ],
             ];
         }
-
-
             $this->sendMessage($userId, $msg, $markup);
-
-
     }
     protected function showToken($token, $portfolioID, $userId){
+        $transactions = Transaction::where('token_id', $token->id)->get();
+        //toDo: метод обновления транзакции при добавлении или продаже токена, модель, метод в этой функции извлекающий инф о транзакции.
+
+        $currentPrice = $token->current_price*$token->amount;
+        $price = 0;
+        foreach($transactions as $transaction){
+            $price += $transaction->sum;
+        }
+        $mcap = $this->formatMarketCap($token->market_cap_usd);
+        $aov = round($token->volume_usd_h24, 2);
 
         $txt = "Статистика по токену $token->symbol - $token->name:
-        CA: $token->address
-        Баланс: 3412$/6524 $token->symbol (1.1 $token->network)
+        \nCA: $token->address
+        \nБаланс: $price$|$token->quantity $token->symbol  (X $token->network)
+        \nMCAP $mcap | 100% value
+        \nCurrent price: $currentPrice $ | AOV: $aov$
+        \nPNL: DAY: 17% | WEEK: 2% | MONTH: 23% | ALL TIME: 53%
+        \n\nИстория транзакций: ";
+            foreach($transactions as $transaction){
+                $formattedDate = date('d F', strtotime($transaction->created_at));
+                $txt .= "\n$transaction->type: $formattedDate $transaction->amount $token->symbol| $transaction->sum$ (цена покупки $transaction->price$)";
+            }
+        $txt .= "\n\nToken Achivements: X2, X5, X10";
 
-        MCAP 192M | 70% value
-         Current price: 1.292 $ | AOV: 1.09$
-        PNL: DAY: 17% | WEEK: 2% | MONTH: 23% | ALL TIME: 53%
 
-        История транзакций:
-        Buy: 24 июня 1234 $token->symbol/12$ (цена покупки 0.003$)
-        Buy: 28 июня 255 $token->symbol/100$ (цена покупки 0.025$)
-        Sell: 17 августа 1500 $token->symbol/4444$ (цена продажи 0.028)
-
-        Token Achivements: X2, X5, X10";
 
        $markup = [
             'inline_keyboard' => [
@@ -569,10 +648,18 @@ class WebhookController extends Controller
             ]
         ];
         $this->sendMessage($userId, $txt, $markup);
+       $state = UserState::where('telegram_user_id', $userId)->first();
+       if ($state){
+           $this->handleBotState($userId, 'portfolio_id', $portfolioID);
+       }
     }
     protected function createToken($userId, $tokenData)
     {
         $tokenAddress = $tokenData[3]->address;
+        $existingToken = Contract::where('address', $tokenAddress)->first();
+        if ($existingToken) {
+            return 'Токен с таким адресом уже существует: ' . $tokenAddress;
+        }
         $token = new Contract();
         $token->network = $tokenData[2]->network;
         $token->address = $tokenAddress;
@@ -581,19 +668,36 @@ class WebhookController extends Controller
         $token->name = $tokenData[6]->tokenAttributes->name;
         $token->symbol = $tokenData[6]->tokenAttributes->symbol;
         $token->price_usd = $tokenData[6]->tokenAttributes->price_usd ? (float)$tokenData[6]->tokenAttributes->price_usd : null;
+        $token->current_price = $tokenData[6]->tokenAttributes->price_usd ? (float)$tokenData[6]->tokenAttributes->price_usd : null;
         $token->market_cap_usd = $tokenData[6]->tokenAttributes->market_cap_usd ? (float)$tokenData[6]->tokenAttributes->market_cap_usd : null;
         $token->fdv_usd = $tokenData[6]->tokenAttributes->fdv_usd ? (float)$tokenData[6]->tokenAttributes->fdv_usd : null;
         $token->total_supply = $tokenData[6]->tokenAttributes->total_supply ? (float)str_replace('.', '', $tokenData[6]->tokenAttributes->total_supply) : null;
         $token->total_reserve_in_usd = $tokenData[6]->tokenAttributes->total_reserve_in_usd ? (float)$tokenData[6]->tokenAttributes->total_reserve_in_usd : null;
         $token->volume_usd_h24 = $tokenData[6]->tokenAttributes->volume_usd->h24 ? (float)$tokenData[6]->tokenAttributes->volume_usd->h24 : null;
-        $token->save();
-
+        try {
+            $token->save();
+        } catch (Exception $e) {
+            return 'Не удалось сохранить токен: ' . $e->getMessage();
+        }
+        $transaction = new Transaction();
+        $transaction->token_id = $token->id;
+        $transaction->type = 'buy';
+        $transaction->amount = $token->quantity;
+        $basePrice = $token->price_usd * $token->quantity;
+        $taxAmount = ($basePrice * $token->tax) / 100;
+        $transaction->price = $token->price_usd;
+        $transaction->sum = round($basePrice + $taxAmount, 1);
+        try {
+            $transaction->save();
+        } catch (Exception $e) {
+            return 'Не удалось сохранить транзакцию: ' . $e->getMessage();
+        }
          if (isset($tokenData[1]->portfolio_id)) {
             $portfolioContract = new PortfolioContract();
             $portfolioContract->portfolio_id = $tokenData[1]->portfolio_id;
             $portfolioContract->contract_id = $token->id;
             $portfolioContract->save();
-            return 'Токен сохранен';
+            $this->showToken($token, $tokenData[1]->portfolio_id, $tokenData[0]->user_id);
         } else {
             return 'Не удалось добавить токен: отсутствует ID портфолио.';
         }
@@ -607,7 +711,6 @@ class WebhookController extends Controller
                 try {
                     DB::transaction(function () use ($portfolioID, $attribute, ) {
                         $portfolio = Portfolio::find($portfolioID);
-
                         if ($portfolio) {
                             $portfolio->$attribute = 1;
                             $portfolio->save();
@@ -622,5 +725,18 @@ class WebhookController extends Controller
                     $this->sendMessage($userId, "Произошла ошибка: " . $e->getMessage(), $markup);
                 }
             }
+    function formatMarketCap($marketCap): string
+    {
+        if ($marketCap >= 1000000000) { // 1 миллиард
+            return round($marketCap / 1000000000, 2) . 'B'; // Форматируем до миллиардов с двумя десятичными знаками
+        } elseif ($marketCap >= 1000000) { // 1 миллион
+            return round($marketCap / 1000000, 2) . 'M'; // Форматируем до миллионов с двумя десятичными знаками
+        } elseif ($marketCap >= 1000) { // 1 тысяча
+            return round($marketCap / 1000, 2) . 'K'; // Форматируем до тысяч с двумя десятичными знаками
+        } else {
+            return $marketCap;
+        }
+    }
+
 
 }

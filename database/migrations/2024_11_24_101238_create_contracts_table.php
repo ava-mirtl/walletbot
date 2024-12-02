@@ -21,6 +21,7 @@ return new class extends Migration
             $table->string('name')->nullable();
             $table->string('symbol')->nullable();
             $table->decimal('price_usd', 20, 10)->nullable();
+            $table->decimal('current_price', 20, 10)->nullable();
             $table->decimal('market_cap_usd', 20, 10)->nullable();
             $table->decimal('fdv_usd', 20, 10)->nullable();
             $table->decimal('total_supply', 30, 0)->nullable();

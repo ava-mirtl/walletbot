@@ -17,7 +17,7 @@ return new class extends Migration
             $table->enum('type', ['buy', 'sell']);
             $table->decimal('amount', 20, 10);
             $table->decimal('price', 20, 10);
-            $table->date('transaction_date');
+            $table->decimal('sum', 20, 5);
             $table->timestamps();
         });
     }
