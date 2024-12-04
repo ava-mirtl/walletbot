@@ -16,7 +16,7 @@ return [
     |
     | - name: The *personal* name you would like to refer to your bot as.
     |
-    |       - token:    Your Telegram Bot's Access Contract.
+    |       - token:    Your Telegram Bot's Access Token.
                         Refer for more details: https://core.telegram.org/bots#botfather
     |                   Example: (string) '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'.
     |

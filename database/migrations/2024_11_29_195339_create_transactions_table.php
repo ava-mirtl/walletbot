@@ -13,11 +13,12 @@ return new class extends Migration
     {
         Schema::create('transactions', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('token_id')->constrained('contracts')->onDelete('cascade');
+            $table->foreignId('token_id')->constrained('tokens')->onDelete('cascade');
             $table->enum('type', ['buy', 'sell']);
             $table->decimal('amount', 20, 10);
             $table->decimal('price', 20, 10);
-            $table->decimal('sum', 20, 5);
+            $table->unsignedSmallInteger('tax')->nullable();
+            $table->decimal('invest', 20, 10);
             $table->timestamps();
         });
     }

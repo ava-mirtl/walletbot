@@ -5,9 +5,9 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class PortfolioContract extends Model
+class Pnl extends Model
 {
     use HasFactory;
-    protected $table = 'portfolio_contract';
+    protected $table = 'pnls';
     protected $guarded = false;
 }

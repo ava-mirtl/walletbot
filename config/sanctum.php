@@ -50,7 +50,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Contract Prefix
+    | Token Prefix
     |--------------------------------------------------------------------------
     |
     | Sanctum can prefix new tokens in order to take advantage of numerous

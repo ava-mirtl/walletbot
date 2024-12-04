@@ -16,7 +16,7 @@ class Portfolio extends Model
     }
     public function tokens()
     {
-        return $this->belongsToMany(Contract::class, 'portfolio_contract', 'portfolio_id', 'contract_id');
+        return $this->hasMany(Token::class);
     }
 
 }
