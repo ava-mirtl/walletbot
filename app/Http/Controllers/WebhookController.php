@@ -82,12 +82,12 @@ class WebhookController extends Controller
 //creating token in DB
                 case '/create_token':
                     $userState = UserState::where('telegram_user_id', $userId)->first();
-                    $tokenData = json_decode($userState->value);
-
-
-                    $txt = $this->createToken($userId, $tokenData);
-                    $this->sendMessage($userId, $txt);
-
+                    if($userState){
+                        $tokenData = json_decode($userState->value);
+                        $txt = $this->createToken($userId, $tokenData);
+                        $this->sendMessage($userId, $txt);
+                        $userState->delete();
+                    }
                     break;
               case preg_match('/^\/foreign_portfolio_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                   $portfolioId = $matches[1];
@@ -611,29 +611,29 @@ class WebhookController extends Controller
         }
             $this->sendMessage($userId, $msg, $markup);
     }
-    protected function showToken($token, $portfolioID, $userId){
+    protected function showToken($token, $portfolioID, $userId) {
         $transactions = Transaction::where('token_id', $token->id)->get();
-        //toDo: метод обновления транзакции при добавлении или продаже токена, модель, метод в этой функции извлекающий инф о транзакции.
-
-        $currentPrice = $token->price_usd*$token->amount;
-        $price = 0;
-        foreach($transactions as $transaction){
-            $price += $transaction->sum;
-        }
+        $pnl = Pnl::where('token_id', $token->id)->orderBy('created_at', 'desc')->first();
+        $currentPrice = $pnl->current_price;
+        $priceNetwork = round($currentPrice / $pnl->network_price, 4);
+        $networkName = strtoupper($token->network);
         $mcap = $this->formatMarketCap($token->market_cap_usd);
-        $aov = round($token->volume_usd_h24, 2);
+        //$aov = round($token->volume_usd_h24, 2);
 
-        $txt = "Статистика по токену $token->symbol - $token->name:
-        \nCA: $token->address
-        \nБаланс: $price$|$token->quantity $token->symbol  (X $token->network)
-        \nMCAP $mcap | 100% value
-        \nCurrent price: $currentPrice $ | AOV: $aov$
-        \nPNL: DAY: 17% | WEEK: 2% | MONTH: 23% | ALL TIME: 53%
-        \n\nИстория транзакций: ";
-            foreach($transactions as $transaction){
-                $formattedDate = date('d F', strtotime($transaction->created_at));
-                $txt .= "\n$transaction->type: $formattedDate $transaction->amount $token->symbol| $transaction->sum$ (цена покупки $transaction->price$)";
-            }
+        $txt = "Статистика по токену $token->symbol - $token->name:";
+        $txt .= "\nCA: $token->address";
+        $txt .= "\nБаланс: " . rtrim(rtrim($currentPrice, '0'), '.') . "$|" . rtrim(rtrim($token->total_amount, '0'), '.') . " $token->symbol ($priceNetwork $networkName)";
+        $txt .= "\nMCAP $mcap | 100% value";
+        $txt .= "\nCurrent price: " . rtrim(rtrim($currentPrice, '0'), '.') . " $ | AOV: x$";
+        $txt .= "\nPNL: \nDAY: $pnl->day% | WEEK: $pnl->week% | MONTH: $pnl->month% | ALL TIME: $pnl->all_time%";
+        $txt .= "\n\nИстория транзакций: ";
+        Carbon::setLocale('ru');
+        foreach ($transactions as $transaction) {
+            $date = Carbon::parse($transaction->created_at);
+            $formattedDate = $date->translatedFormat('d F');
+            $trprice = $transaction->price * $transaction->amount  * (1 + $transaction->tax / 100);
+        $txt .= "\n$transaction->type: $formattedDate " . rtrim(rtrim($transaction->amount, '0'), '.') . " $token->symbol| " . rtrim(rtrim($trprice, '0'), '.') . " $ (цена покупки " . rtrim(rtrim($transaction->price, '0'), '.') . "$)";
+    }
         $txt .= "\n\nToken Achivements: X2, X5, X10";
 
 
@@ -650,49 +650,54 @@ class WebhookController extends Controller
         $this->sendMessage($userId, $txt, $markup);
        $state = UserState::where('telegram_user_id', $userId)->first();
        if ($state){
-           $this->handleBotState($userId, 'portfolio_id', $portfolioID);
+           $state->delete();
        }
     }
     protected function createToken($userId, $tokenData)
     {
         $portfolioID = $tokenData[1]->portfolio_id;
         $tokenAddress = $tokenData[3]->address;
+        $network = $tokenData[2]->network;
+        $tax = $tokenData[4]->tax;
+        $amount = $tokenData[5]->amount;
         $attributes = $tokenData[6]->tokenAttributes;
 
-        $existingToken = Token::where('address', $tokenAddress)->first();
-        $transaction = new Transaction();
-        $basePrice = $attributes->price_usd * $tokenData[5]->amount;
-        $taxAmount = ($basePrice * $tokenData[4]->tax) / 100;
-        $pnl = new Pnl();
+        try {
+            $networkPriceUsd = $this->getPriceInUsd($network);
+            if ($networkPriceUsd === null) {
+                throw new Exception('Не удалось получить цену для сети: ' . $network);
+            }
+        } catch (Exception $e) {
+            $txt = 'Ошибка: ' . $e->getMessage();
+            $this->sendMessage($userId, $txt);
+            return;
+        }
+
+        $existingToken = Token::where('portfolio_id', $portfolioID)->where('address', $tokenAddress)->first();
 
         if ($existingToken) {
-            $basePriceLast = $attributes->price_usd * $existingToken->quantity;
-            $taxAmountLast = ($basePrice * $existingToken->tax) / 100;
-            $cost = $basePriceLast + $taxAmountLast;
-            $total = $basePrice + $taxAmount + $cost;
-            $transaction->token_id = $existingToken->id;
-            $pnl->contract_id =  $existingToken->id;
-            $pnl->token_price = round($total, 2);
-            $pnl->amount = $existingToken->quantity + $tokenData[5]->amount;
-            $pnl->all_time = (($total - $cost) / $cost) * 100;;
-        }
-        else{
-            if (!isset($tokenData[3]->address, $tokenData[2]->network, $tokenData[4]->tax, $tokenData[5]->amount, $tokenData[6]->tokenAttributes)) {
-                return 'Недостаточно данных для создания токена.';
+            try {
+                $existingToken->total_amount += $amount;
+                $existingToken->total_invest += $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
+                $existingToken->network = $network;
+                $existingToken->save();
+                       } catch (Exception $e) {
+                return 'Не удалось обновить токен: ' . $e->getMessage();
             }
+            $this->addTransaction($userId, $existingToken->id, 'buy', $amount, $attributes->price_usd, $tax, $existingToken->total_invest);
+            $this->addPnl($userId, $existingToken->id, $networkPriceUsd, $attributes->price_usd, $existingToken->total_amount, $existingToken->total_invest);
+            $tokenToShow = $existingToken;
+        } else {
             $token = new Token();
-            $token->network = $tokenData[2]->network;
+            $token->portfolio_id = $portfolioID;
             $token->address = $tokenAddress;
-            $token->tax = (float)$tokenData[4]->tax;
-            $token->quantity = (float)$tokenData[5]->amount;
-            $token->name = $attributes->name ?? null;
-            $token->symbol = $attributes->symbol ?? null;
-            $token->price_usd = isset($attributes->price_usd) ? (float)$attributes->price_usd : null;
-            $token->market_cap_usd = isset($attributes->market_cap_usd) ? (float)$attributes->market_cap_usd : null;
-            $token->fdv_usd = isset($attributes->fdv_usd) ? (float)$attributes->fdv_usd : null;
-            $token->total_supply = isset($attributes->total_supply) ? (float)str_replace('.', '', $attributes->total_supply) : null;
-            $token->total_reserve_in_usd = isset($attributes->total_reserve_in_usd) ? (float)$attributes->total_reserve_in_usd : null;
-            $token->volume_usd_h24 = isset($attributes->volume_usd->h24) ? (float)$attributes->volume_usd->h24 : null;
+            $token->name = $attributes->name;
+            $token->symbol = $attributes->symbol;
+            $token->network = $network;
+            $token->total_amount = $amount;
+            $token->total_invest = $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
+            $token->network_price = $networkPriceUsd ? (float)$networkPriceUsd : null;
+            $token->market_cap_usd = $attributes->market_cap_usd ? (float)$attributes->market_cap_usd : null;
 
             try {
                 $token->save();
@@ -700,51 +705,12 @@ class WebhookController extends Controller
                 return 'Не удалось сохранить токен: ' . $e->getMessage();
             }
 
-            $transaction->token_id = $token->id;
-
-            $pnl->contract_id = $token->id;
-            $pnl->token_price = round($basePrice + $taxAmount, 2);
-            $pnl->amount = $token->quantity;
-            $pnl->day = $token->tax;
-
-            if (isset($tokenData[1]->portfolio_id)) {
-                $portfolioContract = new PortfolioContract();
-                $portfolioContract->portfolio_id = $tokenData[1]->portfolio_id;
-                $portfolioContract->contract_id = $token->id;
-
-                try {
-                    $portfolioContract->save();
-
-                    return 'Токен успешно сохранен';
-                } catch (Exception $e) {
-                    return 'Ошибка при сохранении портфолио: ' . $e->getMessage();
-                }
-            } else {
-                return 'Не удалось добавить токен: отсутствует ID портфолио.';
-            }
+            $this->addTransaction($userId, $token->id, 'buy', $amount, $attributes->price_usd, $tax, $token->total_invest);
+            $this->addPnl($userId, $token->id, $networkPriceUsd??0, $attributes->price_usd, $amount, $token->total_invest);
+            $tokenToShow = $token;
         }
 
-        $transaction->type = 'buy';
-        $transaction->amount = $tokenData[5]->amount;
-        $transaction->price = $attributes->price_usd;
-        $transaction->sum = round($basePrice + $taxAmount, 2);
-
-        try {
-            $transaction->save();
-        } catch (Exception $e) {
-            return 'Не удалось сохранить транзакцию: ' . $e->getMessage();
-        }
-
-        $pnl->coin_price = $attributes->price_usd;
-        $pnl->network_price = $networkPriceUsd;
-
-        try {
-            $pnl->save();
-        } catch (Exception $e) {
-            return 'Не удалось сохранить транзакцию: ' . $e->getMessage();
-        }
-
-        $this->showToken($existingToken ?? $token, $portfolioID, $userId);
+        $this->showToken($tokenToShow, $portfolioID, $userId);
     }
     public function handlePortfolioSettings($portfolioID, $attribute, $userId, $text_attribute) {
         $markup = [
@@ -819,16 +785,7 @@ class WebhookController extends Controller
     }
     private function addPnl($userId, $token_id, $network, $coin_price, $amount, $total_invest)
     {
-        try {
-            $networkPriceUsd = $this->getPriceInUsd($network);
-            if ($networkPriceUsd === null) {
-                throw new Exception('Не удалось получить цену для сети: ' . $network);
-            }
-        } catch (Exception $e) {
-            $txt = 'Ошибка: ' . $e->getMessage();
-            $this->sendMessage($userId, $txt);
-            return;
-        }
+
 
         $current = $amount * $coin_price;
         $current_data = Pnl::where('token_id', $token_id)->orderBy('created_at', 'desc')->get();
@@ -864,26 +821,38 @@ class WebhookController extends Controller
         $pnl = new Pnl();
         $pnl->token_id = $token_id;
         $pnl->coin_price = $coin_price;
-        $pnl->network_price = $networkPriceUsd;
-        $pnl->day = $this->countPNL($previousDayAgo, $current);
-        $pnl->week = $this->countPNL($previousWeekAgo, $current);
-        $pnl->month = $this->countPNL($previousMonthAgo, $current);
-        $pnl->year = $this->countPNL($previousYearAgo, $current);
-        $pnl->all_time = $this->countPNL($previousAllTime, $current);
+        $pnl->network_price = $network;
+        $pnl->day = $this->calculatePnl($previousDayAgo, $current);
+        $pnl->week = $this->calculatePnl($previousWeekAgo, $current);
+        $pnl->month = $this->calculatePnl($previousMonthAgo, $current);
+        $pnl->year = $this->calculatePnl($previousYearAgo, $current);
+        $pnl->all_time = $this->calculatePnl($previousAllTime, $current);
         $pnl->current_price = $current;
         $pnl->save();
+
     }
 
-    private function countPNL($previousValue, $currentValue)
+    private function calculatePnl($current, $previous)
     {
-        if ($previousValue === 0) {
-            return 0;
+        if ($previous == 0) {
+            return $current > 0 ? 100 : 0; // Если предыдущая сумма 0, считаем PnL 100% роста или убытка от нуля
         }
-        return (($currentValue - $previousValue) / $previousValue) * 100;
+        return round((($current - $previous) / $previous) * 100);
     }
 
-    private function addTransaction()
+    private function addTransaction($userId, $token_id, $type, $amount, $price, $tax, $invest)
     {
-
+        $transaction = new Transaction();
+        $transaction->token_id = $token_id;
+        $transaction->type = $type;
+        $transaction->amount = $amount;
+        $transaction->price = $price;
+        $transaction->tax = $tax;
+        $transaction->invest = $invest;
+        try {
+            $transaction->save();
+        } catch (Exception $e) {
+            return 'Не удалось сохранить транзакцию: ' . $e->getMessage();
+        }
     }
 }
