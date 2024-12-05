@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Pnl;
+use App\Models\PortfolioPnl;
 use Carbon\Carbon;
 
 class PnlManager
@@ -40,7 +41,6 @@ class PnlManager
         $previousDayAgo = $totalInvest;
         $previousWeekAgo = $totalInvest;
         $previousMonthAgo = $totalInvest;
-        $previousYearAgo = $totalInvest;
         $previousAllTime = $totalInvest;
 
         if ($currentData->isNotEmpty()) {
@@ -58,9 +58,6 @@ class PnlManager
                     $previousMonthAgo = $pnl->current_price;
                 }
 
-                if ($createdAt->isLastYear() && $previousYearAgo == $totalInvest) {
-                    $previousYearAgo = $pnl->current_price;
-                }
             }
         }
 
@@ -71,9 +68,54 @@ class PnlManager
         $pnl->day = self::calculatePnl($current, $previousDayAgo);
         $pnl->week = self::calculatePnl($current, $previousWeekAgo);
         $pnl->month = self::calculatePnl($current, $previousMonthAgo);
-        $pnl->year = self::calculatePnl($current, $previousYearAgo);
         $pnl->all_time = self::calculatePnl($current, $previousAllTime);
         $pnl->current_price = $current;
         $pnl->save();
     }
+    /**
+     * Добавляет PnL для пользователей по различным временным категориям.
+     *
+     * @param int $portfolioId - ID портфеля
+     * @param float $currentPrice - цена монеты
+     * @param float $totalInvest - общая инвестиция
+     * @param float $profit - прибыль
+     */
+    public function portfolioPnl($portfolioId, $totalInvest, $currentPrice, $profit)
+    {
+        $currentData = PortfolioPnl::where('portfolio_id', $portfolioId)->orderBy('created_at', 'desc')->get();
+
+        $previousDayAgo = $totalInvest;
+        $previousWeekAgo = $totalInvest;
+        $previousMonthAgo = $totalInvest;
+        $previousAllTime = $totalInvest;
+
+        if ($currentData->isNotEmpty()) {
+            foreach ($currentData as $pnl) {
+                $createdAt = Carbon::parse($pnl->created_at);
+
+                if ($createdAt->isYesterday() && $previousDayAgo == $totalInvest) {
+                    $previousDayAgo = $pnl->current_price;
+                }
+
+                if ($createdAt->isBetween(Carbon::now()->subDays(8), Carbon::now()->subDays(1)) && $previousWeekAgo == $totalInvest) {
+                    $previousWeekAgo = $pnl->current_price;
+                }
+
+                if ($createdAt->isLastMonth() && $previousMonthAgo == $totalInvest) {
+                    $previousMonthAgo = $pnl->current_price;
+                }
+            }
+        }
+
+        $portfolioPnl = new PortfolioPnl();
+        $portfolioPnl->portfolio_id = $portfolioId;
+        $portfolioPnl->current_price = $currentPrice;
+        $portfolioPnl->day = self::calculatePnl($currentPrice, $previousDayAgo);
+        $portfolioPnl->week = self::calculatePnl($currentPrice, $previousWeekAgo);
+        $portfolioPnl->month = self::calculatePnl($currentPrice, $previousMonthAgo);
+        $portfolioPnl->all_time = self::calculatePnl($currentPrice, $previousAllTime);
+        $portfolioPnl->total_invest = $totalInvest;
+        $portfolioPnl->save();
+    }
+
 }
