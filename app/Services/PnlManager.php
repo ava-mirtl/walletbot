@@ -110,10 +110,10 @@ class PnlManager
         $portfolioPnl = new PortfolioPnl();
         $portfolioPnl->portfolio_id = $portfolioId;
         $portfolioPnl->current_price = $currentPrice;
-        $portfolioPnl->day = self::calculatePnl($currentPrice, $previousDayAgo);
-        $portfolioPnl->week = self::calculatePnl($currentPrice, $previousWeekAgo);
-        $portfolioPnl->month = self::calculatePnl($currentPrice, $previousMonthAgo);
-        $portfolioPnl->all_time = self::calculatePnl($currentPrice, $previousAllTime);
+        $portfolioPnl->day = self::calculatePnl($currentPrice+$profit, $previousDayAgo);
+        $portfolioPnl->week = self::calculatePnl($currentPrice+$profit, $previousWeekAgo);
+        $portfolioPnl->month = self::calculatePnl($currentPrice+$profit, $previousMonthAgo);
+        $portfolioPnl->all_time = self::calculatePnl($currentPrice+$profit, $previousAllTime);
         $portfolioPnl->total_invest = $totalInvest;
         $portfolioPnl->save();
     }

@@ -21,6 +21,7 @@ return new class extends Migration
             $table->integer('total_amount')->nullable();
             $table->json('total_invest')->nullable();
             $table->decimal('network_price', 20, 10)->nullable();
+            $table->decimal('coin_price', 20, 10)->nullable();
             $table->decimal('market_cap_usd', 20, 10)->nullable();
             $table->decimal('profit', 20, 10)->nullable();
             $table->timestamps();

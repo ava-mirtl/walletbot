@@ -303,6 +303,7 @@ class WebhookController extends Controller
                     if ($type === "buy"){
                         try {
                             $token->total_amount += $amount;
+                            $token->coin_price = $attributes->price_usd;
                             $token->total_invest += $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
                             $token->save();
                         } catch (Exception $e) {
@@ -322,6 +323,7 @@ class WebhookController extends Controller
                     elseif ($type === "sell"){
                         try {
                             $token->total_amount -= $amount;
+                            $token->coin_price = $attributes->price_usd;
                             $token->profit = $attributes->price_usd ? $amount * $attributes->price_usd * (1 - $tax / 100) : 0;
                             $token->save();
                         } catch (Exception $e) {
@@ -587,22 +589,40 @@ class WebhookController extends Controller
     {
         //ToDo: формула баланса, PNL $total
 
-        $portfolioInfo = Portfolio::findOrFail($portfolioID);
-        $author = $portfolioInfo->author;
-        $tokens = $portfolioInfo->tokens;
-        $total = 1000;
+        $portfolio = Portfolio::with('tokens', 'author')->findOrFail($portfolioID);
+
+        $author = $portfolio->author;
+        $tokens = $portfolio->tokens;
+        $total = 0;
+        foreach ($tokens as $token) {
+            $currencyKey = $token->network; // Предполагается, что у токена есть свойство network
+            $total += $token->coin_price * $token->total_amount;
+
+            // Суммируем стоимость токенов по сети
+            if (!isset($networkTotals[$currencyKey])) {
+                $networkTotals[$currencyKey] = 0;
+            }
+            $networkTotals[$currencyKey] += $token->coin_price * $token->total_amount/$token->network_price;
+        }
+        $totalRounded = round($total, 2);
         $tokensAmount = count($tokens);
+        $networkBalances = [];
+        foreach ($networkTotals as $network => $balance) {
+            $roundedBalance = round($balance, 5);
+            $networkBalances[] = "{$network}: {$roundedBalance}";
+        }
 
+        $networks = implode(" | ", $networkBalances);
 
-        $msg = "{$portfolioInfo->name}: @{$author->username}
-               \nОбщий баланс: {$total}$ (gg 0.5| kek 0.2)";
+        $msg = "{$portfolio->name}: @{$author->username}
+         \nОбщий баланс: {$totalRounded}$ ($networks)";
 
-        if ($portfolioInfo->is_roi_shown||!$isForeign) {
+        if ($portfolio->is_roi_shown||!$isForeign) {
             $msg .= "\nPNL: DAY 12% | WEEK 2% | MONTH 15% | ALL TIME 53%";
         }
 
 
-        if ($portfolioInfo->is_activities_shown||!$isForeign) {
+        if ($portfolio->is_activities_shown||!$isForeign) {
             $msg .= "\n\nАктивы: {$tokensAmount}/30 активных токенов";
 
             foreach ($tokens as $token) {
@@ -615,12 +635,12 @@ class WebhookController extends Controller
                     $amount = $token->quantity;
                     $current_price = round($amount * $token->price_usd);
                     $msg .= "\n- {$name} | $amount {$symbol} ~ $current_price$ | $network";
-                        if($portfolioInfo->is_prices_shown||!$isForeign){
+                        if($portfolio->is_prices_shown||!$isForeign){
                             $msg .=" | Price: \${$price}";
                         }
                 }
         }
-        if ($portfolioInfo->is_achievements_shown||!$isForeign) {
+        if ($portfolio->is_achievements_shown||!$isForeign) {
             $msg .= "\nBag Achievements: x2, x3, x4, x10
                 \nToken Achievements: x2 (3), x3 (5), x100 (1)";
         }
@@ -683,7 +703,7 @@ class WebhookController extends Controller
         $txt .= "\nCA: $token->address";
         $txt .= "\nБаланс: " . round($currentPrice, 2) . "$|" . $token->total_amount . " $token->symbol ($priceNetwork $networkName)";
         $txt .= "\nMCAP $mcap | 100% value";
-        $txt .= "\nCurrent price: " . round($currentPrice, 2) . " $ | AOV: x$";
+        $txt .= "\nCurrent price: " . $token->coin_price . " $ | AOV: x$";
         $txt .= "\nPNL: \nDAY: $pnl->day% | WEEK: $pnl->week% | MONTH: $pnl->month% | ALL TIME: $pnl->all_time%";
         $txt .= "\n\nИстория транзакций: ";
         Carbon::setLocale('ru');
@@ -720,7 +740,6 @@ class WebhookController extends Controller
         $tax = $tokenData[4]->tax;
         $amount = $tokenData[5]->amount;
         $attributes = $tokenData[6]->tokenAttributes;
-
         try {
             $networkPriceUsd = $this->getPriceInUsd($network);
             if ($networkPriceUsd === null) {
@@ -737,6 +756,7 @@ class WebhookController extends Controller
         if ($existingToken) {
             try {
                 $existingToken->total_amount += $amount;
+                $existingToken->coin_price = $attributes->price_usd;
                 $existingToken->total_invest += $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
                 $existingToken->network = $network;
                 $existingToken->save();
@@ -754,6 +774,7 @@ class WebhookController extends Controller
             $token->name = $attributes->name;
             $token->symbol = $attributes->symbol;
             $token->network = $network;
+            $token->coin_price = $attributes->price_usd;
             $token->total_amount = $amount;
             $token->total_invest = $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
             $token->network_price = $networkPriceUsd ? (float)$networkPriceUsd : null;
