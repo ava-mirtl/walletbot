@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\PortfolioPnl;
 use App\Models\Token;
 use App\Models\Pnl;
 use App\Models\Portfolio;
@@ -99,9 +100,54 @@ class WebhookController extends Controller
                   $portfolioId = $matches[1];
                   $this->showPortfolio($portfolioId, $userId, false);
                   break;
+              case preg_match('/^\/show_all_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                  $portfolioId = $matches[1];
+                  $this->showPortfolioAll($portfolioId, $userId, false, 1);
+                  break;
 
+              case preg_match('/^\/page_up_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                  $portfolioId = $matches[1];
+                  $userState = UserState::where('telegram_user_id', $userId)->first();
+                  $page = 1;
+                  if ($userState){
+                      $page = $userState->value+1;
+                  }
+                  $this->showPortfolioAll($portfolioId, $userId, false, $page);
+                  break;
+              case preg_match('/^\/page_down_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                  $portfolioId = $matches[1];
+                  $userState = UserState::where('telegram_user_id', $userId)->first();
+                  $page = 1;
+                  if ($userState){
+                      $page = $userState->value-1;
+                  }
+                  $this->showPortfolioAll($portfolioId, $userId, false, $page);
+                  break;
+              case preg_match('/^\/pnl_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
+                  $portfolioId = $matches[1];
+                    $pnl = new PnlManager();
+                  $this->sendMessage($userId, "PNL обновлен успешно.");
+//                  if ($pnl->updatePortfolioPnl($portfolioId)) {
+//                      $this->sendMessage($userId, "PNL обновлен успешно.");
+//                  } else {
+//                      $this->sendMessage($userId, "Не удалось обновить PNL.");
+//                  }
+                  break;
               case preg_match('/^\/add_token_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                     $portfolioId = $matches[1];
+                    $tokens = Token::where('portfolio_id', $portfolioId)->where('is_active', 1)->get();
+                    if(count($tokens)>=30){
+                        $markup = [
+                            'inline_keyboard' => [
+                                [
+                                    ['text' => 'Назад', 'callback_data' => '/main_menu'],
+
+                                ],
+                            ]];
+                        $this->sendMessage($userId, 'Этот портфель полон. Пожалуйста, выберите или создайте другой портфель', $markup);
+
+                        break;
+                    }
                     $this->handleBotState($userId, 'awaiting_token_network', $portfolioId);
                     $markup = [
                         'inline_keyboard' => [
@@ -259,8 +305,9 @@ class WebhookController extends Controller
                   $tax = $existingData['tax'];
                   $token = Token::find($existingData['token_id']);
                   $portfolio_id =  $existingData['portfolio_id'];
+                  $pnl = new PnlManager();
                   try {
-                      $networkPriceUsd = $this->getPriceInUsd($token->network);
+                      $networkPriceUsd = $pnl->fetchNetworkPrice($token->network);
                       if ($networkPriceUsd === null) {
                           throw new Exception('Не удалось получить цену для сети: ' . $token->network);
                       }
@@ -322,6 +369,9 @@ class WebhookController extends Controller
                     }
                     elseif ($type === "sell"){
                         try {
+                            if ($token->total_amount - $amount == 0){
+                                $token->is_active = 0;
+                            }
                             $token->total_amount -= $amount;
                             $token->coin_price = $attributes->price_usd;
                             $token->profit = $attributes->price_usd ? $amount * $attributes->price_usd * (1 - $tax / 100) : 0;
@@ -423,7 +473,6 @@ class WebhookController extends Controller
           elseif ($userState && $userState->step === 'awaiting_amount') {
               $amount = $update->getMessage()->getText();
               $userInsert = json_decode($userState->value);
-              $portfolio = $userInsert[1]->portfolio_id;
               $network = $userInsert[2]->network;
               $address = $userInsert[3]->address;
               $tax = $userInsert[4]->tax;
@@ -461,9 +510,10 @@ class WebhookController extends Controller
                       $markup = [
                           'inline_keyboard' => [
                               [
-                                  ['text' => 'Назад', 'callback_data' => "/portfolio_$portfolio"],
+                                  ['text' => 'Назад', 'callback_data' => '/main_menu'],
                               ]
-                          ]];
+                          ]
+                      ];
                   }
               } catch (\Exception $e) {
                   $text =  'Ошибка при получении данных токена: ' . $e->getMessage();
@@ -587,110 +637,221 @@ class WebhookController extends Controller
     }
     private function showPortfolio($portfolioID, $userId, $isForeign)
     {
-        //ToDo: формула баланса, PNL $total
 
-        $portfolio = Portfolio::with('tokens', 'author')->findOrFail($portfolioID);
-
+        $portfolio = Portfolio::with('tokens', 'author', 'pnls')->findOrFail($portfolioID);
         $author = $portfolio->author;
         $tokens = $portfolio->tokens;
+        $lastPnl = $portfolio->pnls()->latest()->first();
+        if ($tokens->isEmpty()) {
+             $this->handleEmptyPortfolio($portfolio, $userId);
+            return;
+        }
+
+
+        // Подсчет общего баланса и стоимости токенов по сетям
+        list($totalRounded, $networkTotals) = $this->calculateTotalAndNetworkTotals($tokens);
+
+        // Формируем сообщение
+        $msg = $this->buildMessage($portfolio, $author, $lastPnl, $totalRounded, $networkTotals, $tokens, $isForeign, 5, 1);
+
+        // Получаем интерфейс для кнопок
+        $markup = $this->getMarkup( $isForeign, $portfolioID, count($tokens), 5);
+
+        $this->sendMessage($userId, $msg, $markup);
+    }
+
+
+    private function handleEmptyPortfolio($portfolio, $userId) {
+        $msg = "{$portfolio->name}: @{$portfolio->author->username}\nУ вашего портфолио нет активных токенов.";
+        $markup = [
+            'inline_keyboard' => [
+                [
+                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                ],
+                [
+                    ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_{$portfolio->id}"]
+                ],
+            ],
+        ];
+
+        $this->sendMessage($userId, $msg, $markup);
+
+    }
+
+    private function calculateTotalAndNetworkTotals($tokens) {
         $total = 0;
+        $networkTotals = [];
+
         foreach ($tokens as $token) {
-            $currencyKey = $token->network; // Предполагается, что у токена есть свойство network
+            $currencyKey = $token->network;
             $total += $token->coin_price * $token->total_amount;
 
-            // Суммируем стоимость токенов по сети
             if (!isset($networkTotals[$currencyKey])) {
                 $networkTotals[$currencyKey] = 0;
             }
-            $networkTotals[$currencyKey] += $token->coin_price * $token->total_amount/$token->network_price;
+            $networkTotals[$currencyKey] += $token->coin_price * $token->total_amount / $token->network_price;
         }
+
         $totalRounded = round($total, 2);
+        return [$totalRounded, $networkTotals];
+    }
+
+    private function buildMessage($portfolio, $author, $lastPnl, $totalRounded, $networkTotals, $tokens, $isForeign, $perPage, $page) {
+        // Получаем общее количество токенов
         $tokensAmount = count($tokens);
+        // Определяем общее количество страниц
+        $pages = $tokensAmount > $perPage ? ceil($tokensAmount / $perPage) : 1;
+
+        // Проверка и корректировка номера страницы
+        if ($page < 1) {
+            $page = 1; // минимальный номер страницы
+        } elseif ($page > $pages) {
+            $page = $pages; // максимальный номер страницы
+        }
+
+        // Смещение для выборки токенов на текущей странице
+        $offset = ($page - 1) * $perPage;
+
+        // Получаем отсортированные токены
+        $sortedTokens = $tokens->sortByDesc(function($token) {
+            return $token->coin_price * $token->total_amount;
+        })->slice($offset, $perPage)->values(); // Используем slice для получения нужного диапазона токенов
+
+        $shownToken = count($sortedTokens);
+        $networkBalances = $this->getNetworkBalances($networkTotals);
+        $networks = implode(" | ", $networkBalances);
+        $msg = "{$portfolio->name}: @{$author->username}\nОбщий баланс: {$totalRounded}$ ($networks)";
+
+        if ($portfolio->is_roi_shown || !$isForeign) {
+            $msg .= "\nPNL: DAY {$lastPnl->day}% | WEEK {$lastPnl->week}% | MONTH {$lastPnl->month}% | ALL TIME {$lastPnl->all_time}%";
+        }
+
+        if ($portfolio->is_activities_shown || !$isForeign) {
+            $msg .= "\n\nАктивы: " . $shownToken . "/$tokensAmount";
+            foreach ($sortedTokens as $index => $token) {
+                $name = $token->name;
+                $symbol = $token->symbol;
+                $price = round($token->coin_price, 5);
+                $amount = $token->total_amount;
+                $current_price = round($token->total_invest);
+                $msg .= "\n" . ($offset + $index + 1) . ". {$name} | $amount {$symbol} ~ $current_price$ | " . strtoupper($token->network);
+                if ($portfolio->is_prices_shown || !$isForeign) {
+                    $msg .= " | Price: \${$price}";
+                }
+            }
+        }
+
+        if ($portfolio->is_achievements_shown || !$isForeign) {
+            $msg .= "\n\nBag Achievements: x2, x3, x4, x10\nToken Achievements: x2 (3), x3 (5), x100 (1)";
+        }
+
+        $carbonDate = Carbon::createFromFormat('Y-m-d H:i:s', $lastPnl->created_at);
+        $formattedDate = $carbonDate->format('d F H:i e');
+        $msg .= "\n\nСтраница $page/$pages\nПоследнее обновление: $formattedDate\n\n-------------------------------------------------\nADS: buy me buy buy buy buy";
+
+        return $msg;
+    }
+
+    private function getNetworkBalances($networkTotals) {
         $networkBalances = [];
+
         foreach ($networkTotals as $network => $balance) {
             $roundedBalance = round($balance, 5);
             $networkBalances[] = "{$network}: {$roundedBalance}";
         }
 
-        $networks = implode(" | ", $networkBalances);
-
-        $msg = "{$portfolio->name}: @{$author->username}
-         \nОбщий баланс: {$totalRounded}$ ($networks)";
-
-        if ($portfolio->is_roi_shown||!$isForeign) {
-            $msg .= "\nPNL: DAY 12% | WEEK 2% | MONTH 15% | ALL TIME 53%";
-        }
-
-
-        if ($portfolio->is_activities_shown||!$isForeign) {
-            $msg .= "\n\nАктивы: {$tokensAmount}/30 активных токенов";
-
-            foreach ($tokens as $token) {
-
-
-                    $name = $token->name;
-                    $symbol = $token->symbol;
-                    $price = $token->price_usd;
-                    $network =  strtoupper($token->network);
-                    $amount = $token->quantity;
-                    $current_price = round($amount * $token->price_usd);
-                    $msg .= "\n- {$name} | $amount {$symbol} ~ $current_price$ | $network";
-                        if($portfolio->is_prices_shown||!$isForeign){
-                            $msg .=" | Price: \${$price}";
-                        }
-                }
-        }
-        if ($portfolio->is_achievements_shown||!$isForeign) {
-            $msg .= "\nBag Achievements: x2, x3, x4, x10
-                \nToken Achievements: x2 (3), x3 (5), x100 (1)";
-        }
-        $msg .= "\n\nСтраница 1/3
-                 \n\nПоследнее обновление: 13 November 13:05 UTC
-                 \n\n-------------------------------------------------
-                 \nADS: buy me buy buy buy buy";
-        if($isForeign){
-            $markup = [
-                'inline_keyboard' => [
-                    [
-                        ['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
-                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']
-                    ],
-                    [
-                        ['text' => 'Назад', 'callback_data' => '/']
-                    ],
-                    [
-                        ['text' => 'Вперед', 'callback_data' => "/"]
-                    ]
-                ],
-            ];
-        }
-        else{
-            $markup = [
-                'inline_keyboard' => [
-                    [
-                        ['text' => 'Обновить PNL', 'callback_data' => '/pnl'],
-                        ['text' => 'В главное меню', 'callback_data' => '/main_menu']
-                    ],
-                    [
-                        ['text' => 'Показать все активы', 'callback_data' => '/show_all']
-                    ],
-                    [
-                        ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]
-                    ],
-                    [
-                        ['text' => 'Перейти в актив', 'callback_data' => "/find_token_$portfolioID"]
-                    ],
-                    [
-                        ['text' => 'Назад', 'callback_data' => '/']
-                    ],
-                    [
-                        ['text' => 'Вперед', 'callback_data' => "/"]
-                    ]
-                ],
-            ];
-        }
-            $this->sendMessage($userId, $msg, $markup);
+        return $networkBalances;
     }
+
+    private function getMarkup( $isForeign, $portfolioID, $totalTokens, $itemsPerPage) {
+        $markup = [
+            'inline_keyboard' => [
+                [
+                    [
+                        'text' => 'Обновить PNL',
+                        'callback_data' => "/pnl_$portfolioID"
+                    ],
+                    [
+                        'text' => 'В главное меню',
+                        'callback_data' => '/main_menu'
+                    ]
+                ],
+            ]
+        ];
+
+        if (!$isForeign) {
+            if ($totalTokens > $itemsPerPage) {
+                $markup['inline_keyboard'][] = [[
+                    'text' => 'Показать все активы',
+                    'callback_data' => '/show_all_' . $portfolioID
+                ]];
+            } else {
+                $markup['inline_keyboard'][] = [[
+                    'text' => 'Перейти в актив',
+                    'callback_data' => '/find_token_' . $portfolioID
+                ]];
+            }
+        }
+
+        return $markup;
+    }
+    protected function showPortfolioAll($portfolioID, $userId, $isForeign, $page)
+    {
+        $portfolio = Portfolio::with('tokens', 'author', 'pnls')->findOrFail($portfolioID);
+        $author = $portfolio->author;
+        $tokens = $portfolio->tokens;
+        $lastPnl = $portfolio->pnls()->latest()->first();
+        if ($tokens->isEmpty()) {
+           $this->handleEmptyPortfolio($portfolio, $userId);
+           return;
+        }
+
+        // Подсчет общего баланса и стоимости токенов по сетям
+        list($totalRounded, $networkTotals) = $this->calculateTotalAndNetworkTotals($tokens);
+
+        // Формируем сообщение
+        $msg = $this->buildMessage($portfolio, $author, $lastPnl, $totalRounded, $networkTotals, $tokens, $isForeign, 10, $page);
+
+        $tokensAmount = count($tokens);
+        $perPage = 10;
+        $totalPages = ceil($tokensAmount / $perPage);
+        $this->handleBotState($userId, 'awaiting_page', $page);
+        // Формируем разметку
+        $markup = [
+            'inline_keyboard' => [
+                [
+                    ['text' => 'Обновить PNL', 'callback_data' => '/pnl_' . $portfolioID],
+                    ['text' => 'В главное меню', 'callback_data' => '/main_menu']
+                ],
+                [[
+                    'text' => 'Перейти в актив',
+                    'callback_data' => '/find_token_' . $portfolioID
+                ]],
+                [  ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_$portfolioID"]]
+            ],
+        ];
+
+    // Кнопка "Назад"
+        if ($page > 1) {
+            $markup['inline_keyboard'][] = [
+                ['text' => 'Назад', 'callback_data' => "/page_down_$portfolioID" ]
+            ];
+        }
+
+    // Кнопка "Вперед"
+        if ($page < $totalPages) {
+            $markup['inline_keyboard'][] = [
+                ['text' => 'Вперед', 'callback_data' => "/page_up_$portfolioID" ]
+            ];
+        }
+
+        $this->sendMessage($userId, $msg, $markup);
+    }
+
+
+
+
+
     protected function showToken($token, $portfolioID, $userId) {
         $transactions = Transaction::where('token_id', $token->id)->get();
         $pnl = Pnl::where('token_id', $token->id)->orderBy('created_at', 'desc')->first();
@@ -715,8 +876,6 @@ class WebhookController extends Controller
     }
         $txt .= "\n\nToken Achivements: X2, X5, X10";
 
-
-
        $markup = [
             'inline_keyboard' => [
 
@@ -732,6 +891,8 @@ class WebhookController extends Controller
            $state->delete();
        }
     }
+
+
     protected function createToken($userId, $tokenData)
     {
         $portfolioID = $tokenData[1]->portfolio_id;
@@ -740,8 +901,11 @@ class WebhookController extends Controller
         $tax = $tokenData[4]->tax;
         $amount = $tokenData[5]->amount;
         $attributes = $tokenData[6]->tokenAttributes;
+        $invest = $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
+        $pnl = new PnlManager();
+
         try {
-            $networkPriceUsd = $this->getPriceInUsd($network);
+            $networkPriceUsd = $pnl->fetchNetworkPrice($network);
             if ($networkPriceUsd === null) {
                 throw new Exception('Не удалось получить цену для сети: ' . $network);
             }
@@ -752,20 +916,20 @@ class WebhookController extends Controller
         }
 
         $existingToken = Token::where('portfolio_id', $portfolioID)->where('address', $tokenAddress)->first();
-
         if ($existingToken) {
             try {
                 $existingToken->total_amount += $amount;
                 $existingToken->coin_price = $attributes->price_usd;
-                $existingToken->total_invest += $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
+                $existingToken->total_invest += $invest;
                 $existingToken->network = $network;
                 $existingToken->save();
                        } catch (Exception $e) {
                 return 'Не удалось обновить токен: ' . $e->getMessage();
             }
             $this->addTransaction($userId, $existingToken->id, 'buy', $amount, $attributes->price_usd, $tax, $existingToken->total_invest);
-            $pnl = new PnlManager();
+
             $pnl->tokenPnl($existingToken->id, $networkPriceUsd, $attributes->price_usd, $existingToken->total_amount, $amount * $attributes->price_usd * (1 + $tax / 100), $existingToken->profit??0);
+            $pnl->portfolioPnl($portfolioID, $existingToken->total_invest + $invest, $attributes->price_usd, $existingToken->profit,  $existingToken->total_amount);
             $tokenToShow = $existingToken;
         } else {
             $token = new Token();
@@ -776,7 +940,7 @@ class WebhookController extends Controller
             $token->network = $network;
             $token->coin_price = $attributes->price_usd;
             $token->total_amount = $amount;
-            $token->total_invest = $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
+            $token->total_invest = $invest;
             $token->network_price = $networkPriceUsd ? (float)$networkPriceUsd : null;
             $token->market_cap_usd = $attributes->market_cap_usd ? (float)$attributes->market_cap_usd : null;
 
@@ -789,6 +953,7 @@ class WebhookController extends Controller
             $this->addTransaction($userId, $token->id, 'buy', $amount, $attributes->price_usd, $tax, $token->total_invest);
             $pnl = new PnlManager();
             $pnl->tokenPnl($token->id, $networkPriceUsd??0, $attributes->price_usd, $amount, $token->total_invest, 0);
+            $pnl->portfolioPnl($portfolioID, $invest, $attributes->price_usd, 0, $amount);
             $tokenToShow = $token;
         }
 
@@ -828,42 +993,6 @@ class WebhookController extends Controller
         } else {
             return $marketCap;
         }
-    }
-
-    function getPriceInUsd($network) {
-       $full_network_name = '';
-        switch ($network) {
-            case 'eth':
-                $full_network_name = 'ethereum';
-                break;
-            case 'sol':
-                $full_network_name = 'solana';
-                break;
-            case 'bsc':
-                $full_network_name = 'binancecoin';
-                break;
-            case 'ton':
-                $full_network_name = 'toncoin';
-                break;
-            case 'trx':
-                $full_network_name = 'tron';
-                break;
-            case 'base':
-                $full_network_name = 'base';
-                break;
-            default:
-                throw new Exception('Unsupported network');
-        }
-        $url ="https://api.coingecko.com/api/v3/simple/price?ids=$full_network_name&vs_currencies=usd";
-        $client = new \GuzzleHttp\Client();
-        $response = $client->request('GET', $url);
-        $apiResponse = json_decode($response->getBody(), true);
-
-        if (isset($apiResponse[$full_network_name]['usd'])) {
-            return $apiResponse[$full_network_name]['usd'];
-        }
-
-        return null;
     }
 
 

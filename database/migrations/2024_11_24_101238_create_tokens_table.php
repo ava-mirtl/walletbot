@@ -24,6 +24,7 @@ return new class extends Migration
             $table->decimal('coin_price', 20, 10)->nullable();
             $table->decimal('market_cap_usd', 20, 10)->nullable();
             $table->decimal('profit', 20, 10)->nullable();
+            $table->boolean('is_active')->default(1);
             $table->timestamps();
         });
     }

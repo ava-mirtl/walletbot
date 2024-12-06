@@ -18,5 +18,8 @@ class Portfolio extends Model
     {
         return $this->hasMany(Token::class);
     }
-
+    public function pnls()
+    {
+        return $this->hasMany(PortfolioPnl::class);
+    }
 }
