@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Pnl;
 use App\Models\Portfolio;
 use App\Models\PortfolioPnl;
+use App\Models\Token;
 use Carbon\Carbon;
 
 class PnlManager
@@ -125,76 +126,143 @@ class PnlManager
         $portfolio = Portfolio::with('tokens')->findOrFail($portfolioID);
         $tokens = $portfolio->tokens;
         $portfolioCurrentPrice = 0;
-        // Перебираем все токены и обновляем их цены
-        foreach ($tokens as $token) {
-            $newPrice = $this->fetchTokenPrice($token);
-            $newNetwPrice = $this->fetchNetworkPrice($token->network);
-            if ($newPrice !== null) {
-                $portfolioCurrentPrice += $newPrice* $token->total_amount+$token->profit;
-                $token->coin_price = $newPrice;
 
+        // Группируем адреса токенов по сетям
+        $tokenAddresses = [];
+        $networkTokens = [];
+        foreach ($tokens as $token) {
+            $tokenAddresses[] = $token->address;
+            $networkTokens[$token->network][] = $token;
+        }
+
+        // Получаем цены для всех токенов за один запрос
+        $prices = $this->fetchTokenPrices($tokenAddresses, $tokens[0]->network); // Используем первую сеть для `network`
+
+        // Получаем цены для всех сетей за один запрос
+        $networkPrices = $this->fetchNetworkPrices(array_keys($networkTokens));
+        foreach ($tokens as $token) {
+            if (isset($prices[$token->address])) {
+                $newPrice = $prices[$token->address];
+                $newNetwPrice = $networkPrices[$token->network] ?? null;
+
+                $portfolioCurrentPrice += $newPrice * $token->total_amount + $token->profit;
+                $token->coin_price = $newPrice;
                 $token->network_price = $newNetwPrice;
                 $token->save();
 
                 $this->tokenPnl($token->id, $newNetwPrice, $newPrice, $token->total_amount, $token->total_invest, 0);
             }
         }
+
         // Пересчитываем общий PNL для портфолио
         $this->recalculatePortfolioPnl($portfolio, $portfolioCurrentPrice);
 
         // Опционально: Вернуть статус обновления
         return true;
     }
-    private function fetchTokenPrice($token)
+    public function updateTokenPnl($tokenId)
     {
-        //toDo：переписать, чтобы массив адресов отправлять и получать их объекты
+        $token = Token::find($tokenId);
 
-        $client = new \GuzzleHttp\Client();
-            $response = $client->request('GET', 'https://api.geckoterminal.com/api/v2/networks/' . $token->network . '/tokens/multi/' . $token->address);
-            $apiResponse = json_decode($response->getBody());
-
-            if (isset($apiResponse->data) && count($apiResponse->data) > 0) {
-                return $apiResponse->data[0]->attributes->price_usd;
-            } else return null;
-    }
-    public function fetchNetworkPrice($network)
-    {
-        //toDo：переписать, чтобы возвращать массив всех этих монет за 1 запрос
-            $full_network_name = '';
-            switch ($network) {
-                case 'eth':
-                    $full_network_name = 'ethereum';
-                    break;
-                case 'sol':
-                    $full_network_name = 'solana';
-                    break;
-                case 'bsc':
-                    $full_network_name = 'binancecoin';
-                    break;
-                case 'ton':
-                    $full_network_name = 'toncoin';
-                    break;
-                case 'trx':
-                    $full_network_name = 'tron';
-                    break;
-                case 'base':
-                    $full_network_name = 'base';
-                    break;
-                default:
-                    throw new Exception('Unsupported network');
-            }
-            $url ="https://api.coingecko.com/api/v3/simple/price?ids=$full_network_name&vs_currencies=usd";
-            $client = new \GuzzleHttp\Client();
-            $response = $client->request('GET', $url);
-            $apiResponse = json_decode($response->getBody(), true);
-
-            if (isset($apiResponse[$full_network_name]['usd'])) {
-                return $apiResponse[$full_network_name]['usd'];
-            }
-
-            return null;
+        if (!$token) {
+            return false;
         }
 
+        $newCoinPrice = $this->getNewCoinPrice($token);
+        $newNetworkPrice = $this->getNewNetworkPrice($token->network);
+
+        // Рассчитываем текущую стоимость
+        $current = ($token->total_amount * $newCoinPrice) + $token->profit;
+
+        // Получаем последний PnL для расчета
+        $lastPnl = Pnl::where('token_id', $tokenId)->orderBy('created_at', 'desc')->first();
+
+        // Инициализация предыдущих значений
+        $previousDayAgo = $lastPnl ? $lastPnl->current_price : 0;
+        $previousWeekAgo = $lastPnl ? $lastPnl->current_price : 0;
+        $previousMonthAgo = $lastPnl ? $lastPnl->current_price : 0;
+        $previousAllTime = $lastPnl ? $lastPnl->current_price : 0;
+
+        // Создаем новую запись PnL
+        $pnl = new Pnl();
+        $pnl->token_id = $tokenId;
+        $pnl->coin_price = $newCoinPrice;
+        $pnl->network_price = $newNetworkPrice;
+        $pnl->current_price = $current;
+
+        // Вычисляем PnL на основе предыдущих значений
+        $pnl->day = self::calculatePnl($current, $previousDayAgo);
+        $pnl->week = self::calculatePnl($current, $previousWeekAgo);
+        $pnl->month = self::calculatePnl($current, $previousMonthAgo);
+        $pnl->all_time = self::calculatePnl($current, $previousAllTime);
+
+        $pnl->save();
+
+        return true;
+    }
+    private function fetchTokenPrices(array $tokenAddresses, $network)
+    {
+        $client = new \GuzzleHttp\Client();
+        $url = 'https://api.geckoterminal.com/api/v2/networks/' . $network . '/tokens/multi/' . implode(',', $tokenAddresses);
+        $response = $client->request('GET', $url);
+        $apiResponse = json_decode($response->getBody(), true);
+
+        $prices = [];
+        if (isset($apiResponse['data'])) {
+            foreach ($apiResponse['data'] as $tokenData) {
+                $prices[$tokenData['attributes']['address']] = $tokenData['attributes']['price_usd'];
+            }
+        }
+        return $prices;
+    }
+
+    public function fetchNetworkPrices(array $networks)
+    {
+        $fullNetworkNames = [
+            'eth' => 'ethereum',
+            'solana' => 'solana',
+            'bsc' => 'binancecoin',
+            'ton' => 'ton',
+            'trx' => 'tron',
+            'base' => 'base'
+        ];
+
+        $ids = [];
+        foreach ($networks as $network) {
+            if (!isset($fullNetworkNames[$network])) {
+                throw new Exception('Unsupported network');
+            }
+            // Добавляем id для запроса в API
+            $ids[] = $fullNetworkNames[$network];
+        }
+
+        // Выполняем один запрос для всех сетей
+        $url = "https://api.coingecko.com/api/v3/simple/price?ids=" . implode(',', $ids) . "&vs_currencies=usd";
+        $client = new \GuzzleHttp\Client();
+        $response = $client->request('GET', $url);
+        $apiResponse = json_decode($response->getBody(), true);
+
+        // Определяем массив с ценами
+        $networkPrices = [];
+
+        // Теперь заполняем сети с использованием их кодов
+        foreach ($networks as $network) {
+            $networkPrices[$network] = $apiResponse[$fullNetworkNames[$network]]['usd'] ?? null;
+        }
+        return $networkPrices;
+    }
+    private function getNewCoinPrice($token)
+    {
+        $tokenAddresses = [$token->address];
+        $prices = $this->fetchTokenPrices($tokenAddresses, $token->network);
+        return $prices[$token->address] ?? null;
+    }
+
+    public function getNewNetworkPrice($network)
+    {
+        $networkPrices = $this->fetchNetworkPrices([$network]);
+        return $networkPrices[$network] ?? null; // Вернет текущую цену сети в USD или null, если цена не найдена
+    }
     protected function recalculatePortfolioPnl($portfolio, $currentPrice)
     {
         $currentData = PortfolioPnl::where('portfolio_id', $portfolio->id)->orderBy('created_at', 'desc')->get();

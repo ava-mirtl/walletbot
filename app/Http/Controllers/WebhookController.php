@@ -126,12 +126,12 @@ class WebhookController extends Controller
               case preg_match('/^\/pnl_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                   $portfolioId = $matches[1];
                     $pnl = new PnlManager();
-                  $this->sendMessage($userId, "PNL обновлен успешно.");
-//                  if ($pnl->updatePortfolioPnl($portfolioId)) {
-//                      $this->sendMessage($userId, "PNL обновлен успешно.");
-//                  } else {
-//                      $this->sendMessage($userId, "Не удалось обновить PNL.");
-//                  }
+                  if ($pnl->updatePortfolioPnl($portfolioId)) {
+                      $this->sendMessage($userId, "PNL обновлен успешно.");
+                      $this->showPortfolio($userId, $portfolioId, false);
+                  } else {
+                      $this->sendMessage($userId, "Не удалось обновить PNL.");
+                  }
                   break;
               case preg_match('/^\/add_token_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                     $portfolioId = $matches[1];
@@ -153,7 +153,7 @@ class WebhookController extends Controller
                         'inline_keyboard' => [
                             [
                                 ['text' => 'ETH', 'callback_data' => 'eth'],
-                                ['text' => 'SOL', 'callback_data' => 'sol'],
+                                ['text' => 'SOL', 'callback_data' => 'solana'],
                                 ['text' => 'BSC', 'callback_data' => 'bsc']
                             ],
                             [
@@ -165,7 +165,7 @@ class WebhookController extends Controller
                     $this->sendMessage($userId, 'Выберите сеть:', $markup);
                     break;
               case 'eth':
-              case 'sol':
+              case 'solana':
               case 'bsc':
               case 'trx':
               case 'base':
@@ -286,6 +286,19 @@ class WebhookController extends Controller
                   $this->handleBotState($userId, 'awaiting_token_index', $portfolioID);
                   $this->sendMessage($userId, "Введите номер актива");
                   break;
+              case preg_match('/^\/reload_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
+                  $tokenID = $matches[1];
+                  $pnl = new PnlManager();
+                  if ($pnl->updateTokenPnl($tokenID)) {
+                      $this->sendMessage($userId, "PNL обновлен успешно.");
+                      $token = Token::find($tokenID);
+                      $this->showToken($token, $userId);
+                  } else {
+                      $this->sendMessage($userId, "Не удалось обновить PNL.");
+                  }
+
+
+                  break;
               case preg_match('/^\/buy_token_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
               case preg_match('/^\/sell_token_(\d+)$/', $callbackData, $matches)? $matches[0] : false:
               $this->handleTokenTransaction($callbackData, $userId);
@@ -295,19 +308,19 @@ class WebhookController extends Controller
                   $existingData = json_decode($userState->value, true);
                   $portfolio_id =  $existingData['portfolio_id'];
                   $token = Token::find($existingData['token_id']);
-                  $this->showToken($token,$portfolio_id ,$userId);
+                  $this->showToken($token,$userId);
                   break;
               case '/agree':
                   $userState = UserState::where('telegram_user_id', $userId)->first();
                   $existingData = json_decode($userState->value, true);
-                  $type =  $existingData['type'];
+                  $type =  $existingData['type']??'buy';
                   $amount = $existingData['amount'];
                   $tax = $existingData['tax'];
                   $token = Token::find($existingData['token_id']);
                   $portfolio_id =  $existingData['portfolio_id'];
                   $pnl = new PnlManager();
                   try {
-                      $networkPriceUsd = $pnl->fetchNetworkPrice($token->network);
+                      $networkPriceUsd = $pnl->getNewNetworkPrice($token->network);
                       if ($networkPriceUsd === null) {
                           throw new Exception('Не удалось получить цену для сети: ' . $token->network);
                       }
@@ -352,6 +365,7 @@ class WebhookController extends Controller
                             $token->total_amount += $amount;
                             $token->coin_price = $attributes->price_usd;
                             $token->total_invest += $attributes->price_usd ? $amount * $attributes->price_usd * (1 + $tax / 100) : 0;
+                            $token->is_active = 1;
                             $token->save();
                         } catch (Exception $e) {
                             $txt =  'Не удалось обновить токен: ' . $e->getMessage();
@@ -372,6 +386,9 @@ class WebhookController extends Controller
                             if ($token->total_amount - $amount == 0){
                                 $token->is_active = 0;
                             }
+                            else{
+                                $token->is_active = 1;
+                            }
                             $token->total_amount -= $amount;
                             $token->coin_price = $attributes->price_usd;
                             $token->profit = $attributes->price_usd ? $amount * $attributes->price_usd * (1 - $tax / 100) : 0;
@@ -390,7 +407,7 @@ class WebhookController extends Controller
                         $pnl = new PnlManager();
                         $pnl->tokenPnl($token->id, $networkPriceUsd, $attributes->price_usd, $token->total_amount, $token->total_invest, $token->profit??0);
                     }
-                  $this->showToken($token,$portfolio_id,$userId);
+                  $this->showToken($token,$userId);
                   break;
               default:
                     break;
@@ -532,9 +549,12 @@ class WebhookController extends Controller
                 $i = intval($update->getMessage()->getText());
                 $index = $i - 1;
                 $tokens = Portfolio::find($userState->value)->tokens;
-              if (isset($tokens[$index])) {
-                  $token = $tokens[$index];
-                  $this->showToken($token, $userState->value, $userId);
+              $sortedTokens = $tokens->sortByDesc(function($token) {
+                  return $token->coin_price * $token->total_amount;
+              })->values();
+              if (isset($sortedTokens[$index])) {
+                  $token = $sortedTokens[$index];
+                  $this->showToken($token,  $userId);
               } else {
                   $this->sendMessage($userId, "Токен с номером {$i} не найден.");
               }
@@ -789,7 +809,9 @@ class WebhookController extends Controller
                 $markup['inline_keyboard'][] = [[
                     'text' => 'Перейти в актив',
                     'callback_data' => '/find_token_' . $portfolioID
-                ]];
+                ],
+                    ['text' => 'Купить/добавить транзакцию', 'callback_data' => "/add_token_{$portfolioID}"]
+                ];
             }
         }
 
@@ -852,7 +874,7 @@ class WebhookController extends Controller
 
 
 
-    protected function showToken($token, $portfolioID, $userId) {
+    protected function showToken($token, $userId) {
         $transactions = Transaction::where('token_id', $token->id)->get();
         $pnl = Pnl::where('token_id', $token->id)->orderBy('created_at', 'desc')->first();
         $currentPrice = $pnl->current_price;
@@ -881,7 +903,7 @@ class WebhookController extends Controller
 
                 [['text' => "Купить $token->symbol", 'callback_data' => "/buy_token_$token->id"],
                 ['text' => "Продать $token->symbol", 'callback_data' => "/sell_token_$token->id"]],
-                [['text' => "В портфель", 'callback_data' => "/portfolio_$portfolioID"],
+                [['text' => "В портфель", 'callback_data' => "/portfolio_$token->portfolio_id"],
                  ['text' => "Обновить PNL", 'callback_data' => "/reload_$token->id"]],
             ]
         ];
@@ -905,7 +927,7 @@ class WebhookController extends Controller
         $pnl = new PnlManager();
 
         try {
-            $networkPriceUsd = $pnl->fetchNetworkPrice($network);
+            $networkPriceUsd = $pnl->getNewNetworkPrice($network);
             if ($networkPriceUsd === null) {
                 throw new Exception('Не удалось получить цену для сети: ' . $network);
             }
@@ -957,7 +979,7 @@ class WebhookController extends Controller
             $tokenToShow = $token;
         }
 
-        $this->showToken($tokenToShow, $portfolioID, $userId);
+        $this->showToken($tokenToShow, $userId);
     }
     public function handlePortfolioSettings($portfolioID, $attribute, $userId, $text_attribute) {
         $markup = [
@@ -982,8 +1004,11 @@ class WebhookController extends Controller
                     $this->sendMessage($userId, "Произошла ошибка: " . $e->getMessage(), $markup);
                 }
             }
-    function formatMarketCap($marketCap): string
+    function formatMarketCap($marketCap)
     {
+        if(!$marketCap){
+            return null;
+        }
         if ($marketCap >= 1000000000) { // 1 миллиард
             return round($marketCap / 1000000000, 2) . 'B'; // Форматируем до миллиардов с двумя десятичными знаками
         } elseif ($marketCap >= 1000000) { // 1 миллион
