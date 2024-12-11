@@ -16,6 +16,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Telegram\Bot\BotsManager;
 
 class WebhookController extends Controller
@@ -126,9 +127,10 @@ class WebhookController extends Controller
               case preg_match('/^\/pnl_(\d+)$/', $callbackData, $matches) ? $matches[0] : false:
                   $portfolioId = $matches[1];
                     $pnl = new PnlManager();
+
                   if ($pnl->updatePortfolioPnl($portfolioId)) {
                       $this->sendMessage($userId, "PNL обновлен успешно.");
-                      $this->showPortfolio($userId, $portfolioId, false);
+                      $this->showPortfolio($portfolioId, $userId,  false);
                   } else {
                       $this->sendMessage($userId, "Не удалось обновить PNL.");
                   }
@@ -661,12 +663,15 @@ class WebhookController extends Controller
         $portfolio = Portfolio::with('tokens', 'author', 'pnls')->findOrFail($portfolioID);
         $author = $portfolio->author;
         $tokens = $portfolio->tokens;
-        $lastPnl = $portfolio->pnls()->latest()->first();
+
+        $lastPnl = $portfolio->pnls()->orderBy('created_at', 'desc')->first();
+
+
         if ($tokens->isEmpty()) {
-             $this->handleEmptyPortfolio($portfolio, $userId);
+            Log::info('Портфолио пустое, вызываем обработку пустого портфолио.');
+            $this->handleEmptyPortfolio($portfolio, $userId);
             return;
         }
-
 
         // Подсчет общего баланса и стоимости токенов по сетям
         list($totalRounded, $networkTotals) = $this->calculateTotalAndNetworkTotals($tokens);
@@ -699,6 +704,7 @@ class WebhookController extends Controller
     }
 
     private function calculateTotalAndNetworkTotals($tokens) {
+
         $total = 0;
         $networkTotals = [];
 
@@ -710,7 +716,9 @@ class WebhookController extends Controller
                 $networkTotals[$currencyKey] = 0;
             }
             $networkTotals[$currencyKey] += $token->coin_price * $token->total_amount / $token->network_price;
+
         }
+
 
         $totalRounded = round($total, 2);
         return [$totalRounded, $networkTotals];
@@ -789,7 +797,7 @@ class WebhookController extends Controller
                 [
                     [
                         'text' => 'Обновить PNL',
-                        'callback_data' => "/pnl_$portfolioID"
+                        'callback_data' => "/pnl_{$portfolioID}"
                     ],
                     [
                         'text' => 'В главное меню',
@@ -842,7 +850,7 @@ class WebhookController extends Controller
         $markup = [
             'inline_keyboard' => [
                 [
-                    ['text' => 'Обновить PNL', 'callback_data' => '/pnl_' . $portfolioID],
+                    ['text' => 'Обновить PNL', 'callback_data' => "/pnl_$portfolioID"],
                     ['text' => 'В главное меню', 'callback_data' => '/main_menu']
                 ],
                 [[
@@ -877,7 +885,9 @@ class WebhookController extends Controller
     protected function showToken($token, $userId) {
         $transactions = Transaction::where('token_id', $token->id)->get();
         $pnl = Pnl::where('token_id', $token->id)->orderBy('created_at', 'desc')->first();
+        $portfolio_price = PortfolioPnl::where('portfolio_id', $token->portfolio_id)->orderBy('created_at', 'desc')->first()->current_price;
         $currentPrice = $pnl->current_price;
+        $value = round($currentPrice*100/$portfolio_price);
         $priceNetwork = round($currentPrice / $pnl->network_price, 4);
         $networkName = strtoupper($token->network);
         $mcap = $this->formatMarketCap($token->market_cap_usd);
@@ -885,7 +895,7 @@ class WebhookController extends Controller
         $txt = "Статистика по токену $token->symbol - $token->name:";
         $txt .= "\nCA: $token->address";
         $txt .= "\nБаланс: " . round($currentPrice, 2) . "$|" . $token->total_amount . " $token->symbol ($priceNetwork $networkName)";
-        $txt .= "\nMCAP $mcap | 100% value";
+        $txt .= "\nMCAP $mcap | $value% value";
         $txt .= "\nCurrent price: " . $token->coin_price . " $ | AOV: x$";
         $txt .= "\nPNL: \nDAY: $pnl->day% | WEEK: $pnl->week% | MONTH: $pnl->month% | ALL TIME: $pnl->all_time%";
         $txt .= "\n\nИстория транзакций: ";
@@ -934,7 +944,6 @@ class WebhookController extends Controller
         } catch (Exception $e) {
             $txt = 'Ошибка: ' . $e->getMessage();
             $this->sendMessage($userId, $txt);
-            return;
         }
 
         $existingToken = Token::where('portfolio_id', $portfolioID)->where('address', $tokenAddress)->first();
@@ -951,7 +960,9 @@ class WebhookController extends Controller
             $this->addTransaction($userId, $existingToken->id, 'buy', $amount, $attributes->price_usd, $tax, $existingToken->total_invest);
 
             $pnl->tokenPnl($existingToken->id, $networkPriceUsd, $attributes->price_usd, $existingToken->total_amount, $amount * $attributes->price_usd * (1 + $tax / 100), $existingToken->profit??0);
-            $pnl->portfolioPnl($portfolioID, $existingToken->total_invest + $invest, $attributes->price_usd, $existingToken->profit,  $existingToken->total_amount);
+            $lastPortfolioPnl = PortfolioPnl::where('portfolio_id', $portfolioID)->orderBy('created_at', 'desc')->first();
+            $pnl->portfolioPnl($portfolioID, $lastPortfolioPnl->total_invest + $invest);
+
             $tokenToShow = $existingToken;
         } else {
             $token = new Token();
@@ -975,7 +986,9 @@ class WebhookController extends Controller
             $this->addTransaction($userId, $token->id, 'buy', $amount, $attributes->price_usd, $tax, $token->total_invest);
             $pnl = new PnlManager();
             $pnl->tokenPnl($token->id, $networkPriceUsd??0, $attributes->price_usd, $amount, $token->total_invest, 0);
-            $pnl->portfolioPnl($portfolioID, $invest, $attributes->price_usd, 0, $amount);
+
+            $lastPortfolioPnl = PortfolioPnl::where('portfolio_id', $portfolioID)->orderBy('created_at', 'desc')->first();
+            $pnl->portfolioPnl($portfolioID, $lastPortfolioPnl->total_invest + $invest);
             $tokenToShow = $token;
         }
 

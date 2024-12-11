@@ -7,6 +7,9 @@ use App\Models\Portfolio;
 use App\Models\PortfolioPnl;
 use App\Models\Token;
 use Carbon\Carbon;
+use Exception;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Log;
 
 class PnlManager
 {
@@ -82,84 +85,90 @@ class PnlManager
      * @param float $totalInvest - общая инвестиция
      * @param float $profit - прибыль
      */
-    public function portfolioPnl($portfolioId, $totalInvest, $coinPrice, $profit, $amount)
+    public function portfolioPnl($portfolioId, $totalInvest)
     {
-        $currentData = PortfolioPnl::where('portfolio_id', $portfolioId)->orderBy('created_at', 'desc')->get();
-        $current = $amount * $coinPrice + $profit;
-
-        $previousDayAgo = $totalInvest;
-        $previousWeekAgo = $totalInvest;
-        $previousMonthAgo = $totalInvest;
-        $previousAllTime = $totalInvest;
-
-        if ($currentData->isNotEmpty()) {
-            foreach ($currentData as $pnl) {
-                $createdAt = Carbon::parse($pnl->created_at);
-
-                if ($createdAt->isYesterday() && $previousDayAgo == $totalInvest) {
-                    $previousDayAgo = $pnl->current_price;
-                }
-
-                if ($createdAt->isBetween(Carbon::now()->subDays(8), Carbon::now()->subDays(1)) && $previousWeekAgo == $totalInvest) {
-                    $previousWeekAgo = $pnl->current_price;
-                }
-
-                if ($createdAt->isLastMonth() && $previousMonthAgo == $totalInvest) {
-                    $previousMonthAgo = $pnl->current_price;
-                }
-            }
-        }
-
-        $portfolioPnl = new PortfolioPnl();
-        $portfolioPnl->portfolio_id = $portfolioId;
-        $portfolioPnl->current_price = $current;
-        $portfolioPnl->day = self::calculatePnl($current, $previousDayAgo);
-        $portfolioPnl->week = self::calculatePnl($current, $previousWeekAgo);
-        $portfolioPnl->month = self::calculatePnl($current, $previousMonthAgo);
-        $portfolioPnl->all_time = self::calculatePnl($current, $previousAllTime);
-        $portfolioPnl->total_invest = $totalInvest;
-        $portfolioPnl->save();
-    }
-    public function updatePortfolioPnl($portfolioID)
-    {
-        // Получаем кошелек
-        $portfolio = Portfolio::with('tokens')->findOrFail($portfolioID);
+        $portfolio = Portfolio::with('tokens')->findOrFail($portfolioId);
         $tokens = $portfolio->tokens;
         $portfolioCurrentPrice = 0;
 
-        // Группируем адреса токенов по сетям
-        $tokenAddresses = [];
-        $networkTokens = [];
         foreach ($tokens as $token) {
-            $tokenAddresses[] = $token->address;
-            $networkTokens[$token->network][] = $token;
+          $tokenCurrentPrice = $token->last_pnl->current_price;
+          $portfolioCurrentPrice += $tokenCurrentPrice + $token->profit;
+        }
+        $this->recalculatePortfolioPnl($portfolio, $portfolioCurrentPrice, $totalInvest);
+        $achievementManager = new AchievementManager();
+        $achievementManager->updateWalletAchievements($portfolio);
+        return true;
+    }
+
+
+    public function updatePortfolioPnl($portfolioID) {
+        try {
+            $portfolio = Portfolio::with('tokens')->findOrFail($portfolioID);
+        } catch (ModelNotFoundException $e) {
+            return false;
         }
 
-        // Получаем цены для всех токенов за один запрос
-        $prices = $this->fetchTokenPrices($tokenAddresses, $tokens[0]->network); // Используем первую сеть для `network`
+        $tokens = $portfolio->tokens;
+        $portfolioCurrentPrice = 0;
+        $networkTokens = [];
+        $networks = [];
 
-        // Получаем цены для всех сетей за один запрос
-        $networkPrices = $this->fetchNetworkPrices(array_keys($networkTokens));
         foreach ($tokens as $token) {
-            if (isset($prices[$token->address])) {
-                $newPrice = $prices[$token->address];
-                $newNetwPrice = $networkPrices[$token->network] ?? null;
-
-                $portfolioCurrentPrice += $newPrice * $token->total_amount + $token->profit;
-                $token->coin_price = $newPrice;
-                $token->network_price = $newNetwPrice;
-                $token->save();
-
-                $this->tokenPnl($token->id, $newNetwPrice, $newPrice, $token->total_amount, $token->total_invest, 0);
+            $networkTokens[$token->network][] = $token->address; // группируем адреса по сетям
+            if (!in_array($token->network, $networks)) {
+                $networks[] = $token->network; // добавляем уникальные сети
             }
         }
 
-        // Пересчитываем общий PNL для портфолио
-        $this->recalculatePortfolioPnl($portfolio, $portfolioCurrentPrice);
+        $prices = []; // массив для хранения цен токенов
+        foreach ($networkTokens as $network => $tokenAddresses) {
+            $networkPrices = $this->fetchTokenPrices($tokenAddresses, $network);
 
-        // Опционально: Вернуть статус обновления
+            foreach ($tokenAddresses as $address) {
+                if (isset($networkPrices[$address])) {
+                    $prices[$address] = $networkPrices[$address]; // сохраняем цену токена по адресу
+                } else {
+                    Log::warning("Price not found for address: $address in network $network"); // Логируем, если цена не найдена
+                }
+            }
+        }
+
+        // Получаем цены сетей
+        $networkPrices = $this->fetchNetworkPrices($networks);
+        $fullNetworkNames = [
+            'eth' => 'eth',
+            'solana' => 'solana',
+            'base' => 'base',
+            'ton' => 'ton',
+            'bsc' => 'binancecoin',
+            'trx' => 'tron'
+        ];
+foreach ($tokens as $token) {
+            if (isset($prices[$token->address])) {
+                $newPrice = $prices[$token->address];
+                $portfolioCurrentPrice += $newPrice * $token->total_amount + $token->profit;
+                $token->coin_price = $newPrice;
+                $fullNetworkName = $fullNetworkNames[$token->network] ?? null;
+                if ($fullNetworkName && isset($networkPrices[$fullNetworkName])) {
+                    $token->network_price = $networkPrices[$fullNetworkName];
+                } else {
+                    $token->network_price = null;
+                }
+                $token->save();
+                $this->tokenPnl($token->id, $token->network_price, $newPrice, $token->total_amount, $token->total_invest, $token->profit);
+            }
+        }
+
+        $this->recalculatePortfolioPnl($portfolio, $portfolioCurrentPrice);
+        $achievementManager = new AchievementManager();
+        $achievementManager->updateWalletAchievements($portfolio);
+
         return true;
     }
+
+
+
     public function updateTokenPnl($tokenId)
     {
         $token = Token::find($tokenId);
@@ -195,38 +204,39 @@ class PnlManager
         $pnl->week = self::calculatePnl($current, $previousWeekAgo);
         $pnl->month = self::calculatePnl($current, $previousMonthAgo);
         $pnl->all_time = self::calculatePnl($current, $previousAllTime);
-
         $pnl->save();
+
+        $achievementManager = new AchievementManager();
+        $achievementManager->updateTokenAchievements($token);
+
 
         return true;
     }
-    private function fetchTokenPrices(array $tokenAddresses, $network)
-    {
+    private function fetchTokenPrices(array $tokenAddresses, $network) {
         $client = new \GuzzleHttp\Client();
         $url = 'https://api.geckoterminal.com/api/v2/networks/' . $network . '/tokens/multi/' . implode(',', $tokenAddresses);
         $response = $client->request('GET', $url);
         $apiResponse = json_decode($response->getBody(), true);
-
         $prices = [];
+
         if (isset($apiResponse['data'])) {
             foreach ($apiResponse['data'] as $tokenData) {
                 $prices[$tokenData['attributes']['address']] = $tokenData['attributes']['price_usd'];
             }
         }
+
         return $prices;
     }
 
-    public function fetchNetworkPrices(array $networks)
-    {
+    public function fetchNetworkPrices(array $networks) {
         $fullNetworkNames = [
             'eth' => 'ethereum',
             'solana' => 'solana',
-            'bsc' => 'binancecoin',
+            'base' => 'base',
             'ton' => 'ton',
-            'trx' => 'tron',
-            'base' => 'base'
+            'bsc' => 'binancecoin',
+            'trx' => 'tron'
         ];
-
         $ids = [];
         foreach ($networks as $network) {
             if (!isset($fullNetworkNames[$network])) {
@@ -245,10 +255,11 @@ class PnlManager
         // Определяем массив с ценами
         $networkPrices = [];
 
-        // Теперь заполняем сети с использованием их кодов
+        // Заполняем сети с использованием их кодов
         foreach ($networks as $network) {
             $networkPrices[$network] = $apiResponse[$fullNetworkNames[$network]]['usd'] ?? null;
         }
+
         return $networkPrices;
     }
     private function getNewCoinPrice($token)
@@ -263,43 +274,50 @@ class PnlManager
         $networkPrices = $this->fetchNetworkPrices([$network]);
         return $networkPrices[$network] ?? null; // Вернет текущую цену сети в USD или null, если цена не найдена
     }
-    protected function recalculatePortfolioPnl($portfolio, $currentPrice)
+    protected function recalculatePortfolioPnl($portfolio, $currentPrice, $previous = null)
     {
+        // Получаем текущие данные по портфелю
         $currentData = PortfolioPnl::where('portfolio_id', $portfolio->id)->orderBy('created_at', 'desc')->get();
-        if ($currentData->isEmpty()) {
-            $totalInvest = 0;
-        } else {
+
+        // Инициализируем переменные
+        $totalInvest = $previous ?? 0; // Используем переданный аргумент или 0
+        $previousDayAgo = $previous ?? 0;
+        $previousWeekAgo = $previous ?? 0;
+        $previousMonthAgo = $previous ?? 0;
+        $previousAllTime = $previous ?? 0;
+
+        if (!$currentData->isEmpty()) {
             $totalInvest = $currentData->first()->total_invest;
-                $previousDayAgo = $totalInvest;
-                $previousWeekAgo = $totalInvest;
-                $previousMonthAgo = $totalInvest;
-                $previousAllTime = $totalInvest;
+
+            // Обрабатываем существущие данные
             foreach ($currentData as $pnl) {
                 $createdAt = Carbon::parse($pnl->created_at);
 
-                if ($createdAt->isYesterday() && $previousDayAgo == $totalInvest) {
+                if ($createdAt->isYesterday()) {
                     $previousDayAgo = $pnl->current_price;
                 }
 
-                if ($createdAt->isBetween(Carbon::now()->subDays(8), Carbon::now()->subDays(1)) && $previousWeekAgo == $totalInvest) {
+                if ($createdAt->isBetween(Carbon::now()->subDays(8), Carbon::now()->subDays(1))) {
                     $previousWeekAgo = $pnl->current_price;
                 }
 
-                if ($createdAt->isLastMonth() && $previousMonthAgo == $totalInvest) {
+                if ($createdAt->isLastMonth() && $previousMonthAgo === 0) {
                     $previousMonthAgo = $pnl->current_price;
                 }
             }
         }
 
+        // Создаем новый объект PnL для портфеля
         $portfolioPnl = new PortfolioPnl();
         $portfolioPnl->portfolio_id = $portfolio->id;
         $portfolioPnl->current_price = $currentPrice;
-        $portfolioPnl->day = self::calculatePnl($currentPrice, $previousDayAgo);
-        $portfolioPnl->week = self::calculatePnl($currentPrice, $previousWeekAgo);
-        $portfolioPnl->month = self::calculatePnl($currentPrice, $previousMonthAgo);
+        $portfolioPnl->day = self::calculatePnl($currentPrice, $previousDayAgo ?: $previousAllTime);
+        $portfolioPnl->week = self::calculatePnl($currentPrice, $previousWeekAgo ?: $previousAllTime);
+        $portfolioPnl->month = self::calculatePnl($currentPrice, $previousMonthAgo ?: $previousAllTime);
         $portfolioPnl->all_time = self::calculatePnl($currentPrice, $previousAllTime);
         $portfolioPnl->total_invest = $totalInvest;
+
+        // Сохраняем данные
         $portfolioPnl->save();
     }
-
 }

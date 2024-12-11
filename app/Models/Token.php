@@ -23,4 +23,8 @@ class Token extends Model
     {
         return $this->hasMany(Pnl::class);
     }
+    public function last_pnl()
+    {
+        return $this->hasOne(Pnl::class)->latest();
+    }
 }

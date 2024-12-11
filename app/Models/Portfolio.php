@@ -22,4 +22,8 @@ class Portfolio extends Model
     {
         return $this->hasMany(PortfolioPnl::class);
     }
+    public function last_pnl()
+    {
+        return $this->hasOne(PortfolioPnl::class)->latest();
+    }
 }

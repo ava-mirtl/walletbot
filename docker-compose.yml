@@ -20,6 +20,8 @@ services:
         - db
     volumes:
       - ./:/var/www
+#    entrypoint: |
+#              /bin/sh -c "php artisan schedule:work"
     container_name: project_app
 
   db:
